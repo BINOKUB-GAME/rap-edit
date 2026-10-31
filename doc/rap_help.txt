@@ -1,0 +1,57 @@
+{REV} ============================= RAP-EDIT : AIDE TACTIQUE ============================= {RESET}
+
+{BOLD} 1. ONGLETS ET MULTI-DOCUMENTS (Cockpit HUD) :{RESET}
+   :#1, :#2, :#3, :#4       : Bascule directe vers l'onglet 1, 2, 3 ou 4
+   Ctrl + W                 : Raccourci immédiat pour cycler entre les onglets (0 ms)
+   :p  /  :n                : Onglet précédent / suivant
+   :b                       : Affiche la liste des tampons ouverts et modifiés (*)
+   :bd  /  :close           : Ferme l'onglet actif (refuse si modifications en cours)
+   :bd! /  :close!          : Force la fermeture de l'onglet actif sans sauvegarder
+
+{BOLD} 2. ASSAINISSEMENT TACTIQUE ANTI-CORRUPTION :{RESET}
+   :clean                   : Purge globale combinée (supprime ^M et ^@ en 1 passe)
+   :dos2unix  (ou :d2u)     : Convertit CRLF en LF (supprime les retours chariot ^M)
+   :strip-null (ou :null)   : Supprime tous les octets nuls 0x00 corrompus (^@)
+   {RED}^M{RESET} en rouge vif          : Retour chariot Windows (\r / 0x0D) détecté
+   {MAGENTA}^@{RESET} en magenta           : Octet nul (0x00) issu d'un crash disque ou injection
+   Radar HUD (ligne 2)      : Indique [CRLF/DOS] ou [LF/UNIX] et l'alerte [!NUL]
+   Annulation (:u)          : Restaure instantanément l'état brut si nécessaire
+
+{BOLD} 3. PRESSE-PAPIERS ET COLLAGE (3 MODES DISPONIBLES) :{RESET}
+{CYAN}   A. Mode Visuel (Interactif) :{RESET}
+      Shift + Flèches       : Sélectionne une zone de texte à l'écran
+      Ctrl + C / Ctrl + X   : Copie / Coupe la sélection vers le presse-papiers
+      Ctrl + V              : Colle le texte directement à la position du curseur
+{CYAN}   B. Mode CLI en 2 étapes (Copie puis Collage ciblé) :{RESET}
+      Étape 1 (Copie/Coupe) : :10c (copie ligne 10) | :10x (coupe ligne 10)
+                              :1:10c (copie lignes 1 à 10) | :c (ligne courante)
+      Étape 2 (Collage)     : :15w ou :15pp (colle le bloc à la ligne 15)
+                              :pp (colle à la position exacte du curseur)
+{CYAN}   C. Mode CLI en 1 étape (Macro combinée directe) :{RESET}
+      :1:10c:15w            : Copie les lignes 1 à 10 et les colle à la ligne 15
+      :1:10x:15w            : Déplace (coupe et colle) les lignes 1 à 10 en ligne 15
+      :10c:15w              : Copie la ligne 10 et la colle à la ligne 15
+   {YELLOW}*Presse-papiers unifié   : Copiez dans un fichier (#1), collez dans un autre (#2) !{RESET}
+
+{BOLD} 4. NAVIGATION ET AFFICHAGE :{RESET}
+   Page-Up / Page-Down      : Défilement rapide d'une hauteur d'écran complète
+   Support UTF-8 complet    : Rendu natif des caractères accentués (é, è, à, É...)
+   Défilement horizontal    : Automatique dès dépassement de largeur d'écran
+   Commentaires (#, ;, //)  : Coloration atténuée automatique pour lisibilité
+   Ctrl + A / Ctrl + E      : Début de ligne (colonne 0) / Fin de ligne extrême (EOL)
+   :<num>                   : Saut direct à la ligne indiquée (ex: :42)
+   :$                       : Saut direct à la dernière ligne du document
+   Ctrl + G  /  :info       : Statistiques (Ligne, octets, presse-papiers)
+
+{BOLD} 5. RECHERCHE, SUBSTITUTION ET GESTION :{RESET}
+   :s/ancien/nouveau/       : Remplace la 1ère occurrence sur la ligne active
+   :s/ancien/nouveau/g      : Remplace toutes les occurrences sur la ligne active
+   :%s/ancien/nouveau/g     : Remplace dans TOUT le document
+   :<deb>:<fin>s/anc/nouv/g : Remplace dans une plage précise de lignes
+   :<num>d / :<deb>:<fin>d  : Supprime une ligne ou une plage (ex: :2d, :3:90d)
+   :rch <motif>             : Recherche textuelle circulaire instantanée sans latence
+   :u  /  Ctrl + Z          : Annulation / Rétablissement instantané (Undo/Redo)
+   :w!                      : Sauvegarde atomique synchrone sur disque (fsync)
+   :q!                      : Quitte immédiatement l'éditeur sans confirmation
+
+{REV} [Appuyez sur une touche pour revenir à l'éditeur...] {RESET}
