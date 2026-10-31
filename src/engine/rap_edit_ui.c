@@ -1,16 +1,17 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_ui.c
- * RÉVISION    : Rev 3.9 (Tabs Documentation & Multi-Buffer Help)
+ * RÉVISION    : Rev 4.1 (Pedagogical Clipboard & Explicit CLI Documentation)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Ajout de la section 'GESTION DES ONGLETS ET MULTI-FICHIERS'
- *               dans rap_ui_show_help_screen (:#1..:#4, :n, :p, :b, Ctrl+W).
+ * INTÉGRATION : Refonte pédagogique exhaustive de la section PRESSE-PAPIERS de :help.
+ *               Détail pas-à-pas des workflows : Visuel (Ctrl+C/V), CLI 2 étapes
+ *               (:10c puis :15w/:15pp) et Macros combinées en 1 étape (:1:10c:15w).
  * FONCTIONS   :
  *   1. rap_ui_buf_append (Concaténation bornée dans le tampon BSS)
  *   2. rap_ui_buf_append_str (Concaténation rapide de chaînes statiques)
  *   3. rap_ui_is_comment_line (Détection déterministe d'une ligne de commentaire)
  *   4. rap_ui_update_dimensions (Interrogation des dimensions TTY via ioctl)
  *   5. rap_ui_render_screen (Rendu coordonné avec affichage UTF-8 et onglets)
- *   6. rap_ui_show_help_screen (Écran d'aide exhaustif documentant les onglets)
+ *   6. rap_ui_show_help_screen (Écran d'aide exhaustif, structuré et didactique)
  * ============================================================================== */
 
 #ifndef _POSIX_C_SOURCE
@@ -242,7 +243,7 @@ void rap_ui_render_screen(rap_context_t *ctx) {
     } else if (ctx->is_selecting) {
         rap_ui_buf_append_str(RAP_ANSI_YELLOW " [SÉLECTION ACTIVE] Flèches: Étendre | Ctrl+C: Copier | Ctrl+X: Couper | Échap: Annuler " RAP_ANSI_RESET);
     } else {
-        rap_ui_buf_append_str(RAP_ANSI_REVERSE " [VISUEL] Ctrl+W: Onglet | :%s/anc/nouv/g: Remplacer | :u: Undo | ':': Cmds " RAP_ANSI_RESET);
+        rap_ui_buf_append_str(RAP_ANSI_REVERSE " [VISUEL] Ctrl+W: Onglet | :pp: Coller | :%s/anc/nouv/g: Remplacer | :u: Undo " RAP_ANSI_RESET);
     }
     rap_ui_buf_append_str("\033[K");
 
@@ -263,31 +264,43 @@ void rap_ui_render_screen(rap_context_t *ctx) {
 void rap_ui_show_help_screen(void) {
     printf("\033[H\033[2J");
     printf(RAP_ANSI_REVERSE " ============================= RAP-EDIT : AIDE ============================= " RAP_ANSI_RESET "\n\n");
-    printf(RAP_ANSI_BOLD " 1. GESTION DES ONGLETS ET MULTI-FICHIERS (BUFFERS) :" RAP_ANSI_RESET "\n");
-    printf("   :#1, :#2, :#3, :#4       : Bascule directe vers l'onglet 1, 2, 3 ou 4\n");
-    printf("   Ctrl + W                 : Raccourci de bascule d'onglet immédiat (cycle en boucle)\n");
-    printf("   :n  /  :p                : Onglet suivant / précédent\n");
-    printf("   :b                       : Affiche la liste des fichiers ouverts et modifiés (*)\n");
-    printf("   Presse-papiers unifié    : Copiez dans un onglet (Ctrl+C), collez dans un autre (Ctrl+V)\n\n");
 
-    printf(RAP_ANSI_BOLD " 2. NAVIGATION ET AFFICHAGE :" RAP_ANSI_RESET "\n");
+    printf(RAP_ANSI_BOLD " 1. ONGLETS ET MULTI-DOCUMENTS :" RAP_ANSI_RESET "\n");
+    printf("   :#1, :#2, :#3, :#4       : Bascule directe vers l'onglet 1, 2, 3 ou 4\n");
+    printf("   Ctrl + W                 : Raccourci immédiat pour cycler entre les onglets\n");
+    printf("   :p  /  :n                : Onglet précédent / suivant\n");
+    printf("   :b                       : Affiche la liste des tampons ouverts et modifiés (*)\n");
+    printf("   :bd  /  :bd!             : Ferme l'onglet actif (sécurisé / forcé)\n\n");
+
+    printf(RAP_ANSI_BOLD " 2. PRESSE-PAPIERS ET COLLAGE (3 MODES DISPONIBLES) :" RAP_ANSI_RESET "\n");
+    printf(RAP_ANSI_CYAN "   A. Mode Visuel (Interactif) :" RAP_ANSI_RESET "\n");
+    printf("      Shift + Flèches       : Sélectionne une zone de texte à l'écran\n");
+    printf("      Ctrl+C / Ctrl+X       : Copie / Coupe la sélection dans le presse-papiers\n");
+    printf("      Ctrl+V                : Colle le texte directement à la position du curseur\n");
+    printf(RAP_ANSI_CYAN "   B. Mode CLI en 2 étapes (Copie puis Collage ciblé) :" RAP_ANSI_RESET "\n");
+    printf("      Étape 1 (Copie/Coupe) : :10c (copie ligne 10) | :10x (coupe ligne 10)\n");
+    printf("                              :1:10c (copie lignes 1 à 10) | :c (ligne courante)\n");
+    printf("      Étape 2 (Collage)     : :15w ou :15pp (colle le bloc à la ligne 15)\n");
+    printf("                              :pp (colle à la position exacte du curseur)\n");
+    printf(RAP_ANSI_CYAN "   C. Mode CLI en 1 étape (Macro combinée directe) :" RAP_ANSI_RESET "\n");
+    printf("      :1:10c:15w            : Copie les lignes 1 à 10 et les colle à la ligne 15\n");
+    printf("      :1:10x:15w            : Déplace (coupe et colle) les lignes 1 à 10 en ligne 15\n");
+    printf("      :10c:15w              : Copie la ligne 10 et la colle à la ligne 15\n");
+    printf("   *Presse-papiers unifié   : Copiez dans un fichier (#1), collez dans un autre (#2) !\n\n");
+
+    printf(RAP_ANSI_BOLD " 3. NAVIGATION ET AFFICHAGE :" RAP_ANSI_RESET "\n");
+    printf("   Page-Up / Page-Down      : Défilement rapide d'une page écran complète\n");
     printf("   Support UTF-8 complet    : Rendu natif des caractères accentués (é, è, à, É...)\n");
     printf("   Défilement horizontal    : Automatique dès dépassement de largeur d'écran\n");
     printf("   Commentaires (#, ;, //)  : Coloration atténuée automatique pour lisibilité\n");
-    printf("   Ctrl + A / Ctrl + E      : Début de ligne (col 0) / Fin de ligne extrême (EOL)\n");
-    printf("   Shift + Flèches          : Étend la sélection visuelle\n");
-    printf("   Ctrl + C / Ctrl + X / V  : Copier / Couper / Coller\n\n");
+    printf("   Ctrl + A / Ctrl + E      : Début de ligne (col 0) / Fin de ligne extrême (EOL)\n\n");
 
-    printf(RAP_ANSI_BOLD " 3. SUBSTITUTION ET REMPLACEMENT (COMMANDE ':') :" RAP_ANSI_RESET "\n");
-    printf("   :s/anc/nouv/             : Remplace la 1ère occurrence sur la ligne courante\n");
-    printf("   :s/anc/nouv/g            : Remplace toutes les occurrences sur la ligne courante\n");
+    printf(RAP_ANSI_BOLD " 4. RECHERCHE, SUBSTITUTION ET GESTION :" RAP_ANSI_RESET "\n");
+    printf("   :s/anc/nouv/g            : Remplace sur la ligne courante\n");
     printf("   :%%s/anc/nouv/g           : Remplace dans TOUT le document\n");
-    printf("   :<deb>:<fin>s/anc/nouv/g : Remplace dans la plage de lignes ciblée\n\n");
-
-    printf(RAP_ANSI_BOLD " 4. SUPPRESSION ET ANNULATION :" RAP_ANSI_RESET "\n");
     printf("   :<num>d / :<deb>:<fin>d  : Supprime une ligne ou une plage (ex: :2d, :3:90d)\n");
-    printf("   :u  /  Ctrl + Z          : Annule / Rétablit instantanément la dernière action\n");
     printf("   :rch <motif>             : Recherche circulaire rapide sans latence\n");
+    printf("   :u  /  Ctrl + Z          : Annulation / Rétablissement instantané\n");
     printf("   :w!  /  :q!              : Sauvegarde atomique synchro (fsync) / Quitter\n\n");
 
     printf(RAP_ANSI_REVERSE " [Appuyez sur une touche pour revenir à l'éditeur...] " RAP_ANSI_RESET);

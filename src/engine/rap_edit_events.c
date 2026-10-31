@@ -1,12 +1,13 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_events.c
- * RÉVISION    : Rev 1.10 (Multi-Buffer Event Routing & Ctrl+W Tab Switch)
+ * RÉVISION    : Rev 1.14 (Strict Pure-Number Line Jump & Macro Unblocking)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Prise en charge de Ctrl+W (cycle d'onglets) et routage dynamique
- *               du contexte via rap_buffer_get_active() à chaque tour de boucle.
+ * INTÉGRATION : Validation stricte des saisies purement numériques (ex: :42) pour
+ *               interdire l'interception indue des commandes CLI débutant par un chiffre
+ *               (:10c, :10x, :15w, :15pp, :5d). Routage garanti vers les greffons.
  * FONCTIONS   :
- *   1. rap_events_handle_colon_command (Parseur et dispatch des commandes CLI)
- *   2. rap_events_process_escape (Décodage des séquences d'échappement VT100)
+ *   1. rap_events_handle_colon_command (Parseur et dispatch direct sécurisé CLI)
+ *   2. rap_events_process_escape (Décodage étendu : flèches, Shift et Page-Up/Down)
  *   3. rap_events_prompt_command (Invite de commande avec tolérance EINTR)
  *   4. rap_events_run_loop (Boucle principale multi-onglets réactive)
  * ============================================================================== */
@@ -42,25 +43,69 @@ extern int  rap_clip_cut_bytes(rap_context_t *ctx, uint32_t start_off, uint32_t 
 extern int  rap_clip_paste_bytes(rap_context_t *ctx, uint32_t insert_off);
 extern int  rap_clip_parse_line_macro(rap_context_t *ctx, const char *cmd);
 
-/* 1. Parseur et dispatch instantané des commandes de l'invite ':' */
+/* 1. Parseur CLI avec sécurisation stricte des sauts de ligne */
 static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd) {
     if (!cmd || *cmd == '\0') return;
 
-    if (rap_clip_parse_line_macro(ctx, cmd) == 0) {
-        rap_ops_clamp_cursor(ctx);
+    /* A. Navigation d'onglet précédente (:p / :prev) */
+    if (strcmp(cmd, "p") == 0 || strcmp(cmd, "prev") == 0) {
+        rap_buffer_cycle(-1);
+        write(STDOUT_FILENO, "\033[H\033[2J", 7);
+        rap_context_t *act = rap_buffer_get_active();
+        char target_name[64];
+        strncpy(target_name, act->file_path, sizeof(target_name) - 1);
+        target_name[sizeof(target_name) - 1] = '\0';
+        snprintf(act->status_msg, sizeof(act->status_msg),
+                 RAP_ANSI_BOLD "[✓] Onglet #%u : '%.48s'" RAP_ANSI_RESET,
+                 rap_buffer_get_active_idx() + 1, target_name);
         return;
     }
 
-    if (rap_delete_parse_cmd(ctx, cmd) == 0) {
-        rap_ops_clamp_cursor(ctx);
+    /* B. Navigation d'onglet suivante (:n / :next) */
+    if (strcmp(cmd, "n") == 0 || strcmp(cmd, "next") == 0) {
+        rap_buffer_cycle(1);
+        write(STDOUT_FILENO, "\033[H\033[2J", 7);
+        rap_context_t *act = rap_buffer_get_active();
+        char target_name[64];
+        strncpy(target_name, act->file_path, sizeof(target_name) - 1);
+        target_name[sizeof(target_name) - 1] = '\0';
+        snprintf(act->status_msg, sizeof(act->status_msg),
+                 RAP_ANSI_BOLD "[✓] Onglet #%u : '%.48s'" RAP_ANSI_RESET,
+                 rap_buffer_get_active_idx() + 1, target_name);
         return;
     }
 
-    if (rap_replace_parse_cmd(ctx, cmd) == 0) {
-        rap_ops_clamp_cursor(ctx);
+    /* C. Saut direct vers un onglet (:#1 .. :#4) */
+    if (cmd[0] == '#' && cmd[1] >= '1' && cmd[1] <= '4' && cmd[2] == '\0') {
+        uint32_t target = (uint32_t)(cmd[1] - '0');
+        if (target <= rap_buffer_get_count()) {
+            rap_buffer_set_active_idx(target - 1);
+            write(STDOUT_FILENO, "\033[H\033[2J", 7);
+            rap_context_t *act = rap_buffer_get_active();
+            char target_name[64];
+            strncpy(target_name, act->file_path, sizeof(target_name) - 1);
+            target_name[sizeof(target_name) - 1] = '\0';
+            snprintf(act->status_msg, sizeof(act->status_msg),
+                     RAP_ANSI_BOLD "[✓] Bascule vers l'onglet #%u : '%.48s'" RAP_ANSI_RESET,
+                     target, target_name);
+        } else {
+            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                     RAP_ANSI_YELLOW "[!] Onglet inexistant (max: #%u)" RAP_ANSI_RESET,
+                     rap_buffer_get_count());
+        }
         return;
     }
 
+    /* D. Autres commandes de gestion de tampons (:b, :bd, :close) */
+    if (strcmp(cmd, "b") == 0 ||
+        strncmp(cmd, "tab", 3) == 0 ||
+        strncmp(cmd, "bd", 2) == 0 ||
+        strncmp(cmd, "close", 5) == 0) {
+        rap_plugin_dispatch(ctx, cmd);
+        return;
+    }
+
+    /* E. Commandes système et d'aide */
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         rap_ui_show_help_screen();
         return;
@@ -82,18 +127,24 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* Commande d'onglet :1 .. :4 si précédée d'un dièse ou commande de saut direct */
-    if (cmd[0] == '#' && cmd[1] >= '1' && cmd[1] <= '4') {
-        rap_plugin_dispatch(ctx, cmd);
-        return;
+    /* F. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
+    bool is_pure_number = true;
+    for (const char *k = cmd; *k != '\0'; ++k) {
+        if (*k < '0' || *k > '9') {
+            is_pure_number = false;
+            break;
+        }
     }
-
-    if (cmd[0] >= '0' && cmd[0] <= '9') {
+    if (is_pure_number && cmd[0] != '\0') {
         int target = atoi(cmd);
         if (target >= 1 && (uint32_t)target <= ctx->total_lines) {
             ctx->cursor_row = (uint32_t)(target - 1);
             ctx->cursor_col = 0;
             rap_undo_reset_burst();
+        } else {
+            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                     RAP_ANSI_YELLOW "[!] Ligne %d hors limites (1-%u)" RAP_ANSI_RESET,
+                     target, ctx->total_lines);
         }
         return;
     }
@@ -102,17 +153,36 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         exit(0);
     } else if (strcmp(cmd, "w!") == 0) {
         rap_plugin_dispatch(ctx, "w!");
-    } else {
-        int res = rap_plugin_dispatch(ctx, cmd);
-        if (res == -127) {
-            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
-                     RAP_ANSI_YELLOW "[!] Commande inconnue : '%.32s'. Tapez :help" RAP_ANSI_RESET, cmd);
-        }
+        rap_ops_clamp_cursor(ctx);
+        return;
+    }
+
+    /* G. Macros d'édition (presse-papiers, suppression, substitution) */
+    if (rap_clip_parse_line_macro(ctx, cmd) == 0) {
+        rap_ops_clamp_cursor(ctx);
+        return;
+    }
+
+    if (rap_delete_parse_cmd(ctx, cmd) == 0) {
+        rap_ops_clamp_cursor(ctx);
+        return;
+    }
+
+    if (rap_replace_parse_cmd(ctx, cmd) == 0) {
+        rap_ops_clamp_cursor(ctx);
+        return;
+    }
+
+    /* H. Dispatch générique pour tout autre greffon */
+    int res = rap_plugin_dispatch(ctx, cmd);
+    if (res == -127) {
+        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                 RAP_ANSI_YELLOW "[!] Commande inconnue : '%.32s'. Tapez :help" RAP_ANSI_RESET, cmd);
     }
     rap_ops_clamp_cursor(ctx);
 }
 
-/* 2. Décodage des séquences d'échappement VT100 */
+/* 2. Décodage étendu : flèches, Shift et Page-Up/Down */
 static void rap_events_process_escape(rap_context_t *ctx) {
     if (!rap_term_has_input(35)) {
         ctx->is_selecting = false;
@@ -128,6 +198,31 @@ static void rap_events_process_escape(rap_context_t *ctx) {
     }
     seq[n] = '\0';
 
+    int page_step = ctx->term_rows - 3;
+    if (page_step < 1) page_step = 1;
+
+    if (n == 4 && seq[1] == '[' && seq[3] == '~') {
+        rap_undo_reset_burst();
+        if (seq[2] == '5') {
+            if (ctx->cursor_row > (uint32_t)page_step) {
+                ctx->cursor_row -= (uint32_t)page_step;
+            } else {
+                ctx->cursor_row = 0;
+            }
+            rap_ops_clamp_cursor(ctx);
+            return;
+        } else if (seq[2] == '6') {
+            if (ctx->total_lines > 0) {
+                ctx->cursor_row += (uint32_t)page_step;
+                if (ctx->cursor_row >= ctx->total_lines) {
+                    ctx->cursor_row = ctx->total_lines - 1;
+                }
+            }
+            rap_ops_clamp_cursor(ctx);
+            return;
+        }
+    }
+
     if (n == 3 && seq[1] == '[') {
         rap_ops_move_cursor(ctx, seq[2]);
     } else if (n == 6 && seq[1] == '[' && seq[2] == '1' && seq[3] == ';' && seq[4] == '2') {
@@ -140,7 +235,7 @@ static void rap_events_process_escape(rap_context_t *ctx) {
     }
 }
 
-/* 3. Saisie interactive de commande en mode brut */
+/* 3. Saisie interactive */
 static void rap_events_prompt_command(rap_context_t *ctx) {
     char cmd_buf[RAP_MAX_LINE_INPUT];
     uint32_t cmd_len = 0;
@@ -163,17 +258,13 @@ static void rap_events_prompt_command(rap_context_t *ctx) {
         char c;
         ssize_t n = read(STDIN_FILENO, &c, 1);
         if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
+            if (errno == EINTR) continue;
             break;
         }
         if (n == 0) break;
 
         if (c == '\033') {
-            if (!rap_term_has_input(35)) {
-                return;
-            }
+            if (!rap_term_has_input(35)) return;
             char dummy[4];
             while (rap_term_has_input(10)) {
                 if (read(STDIN_FILENO, dummy, 1) <= 0) break;
@@ -206,11 +297,10 @@ static void rap_events_prompt_command(rap_context_t *ctx) {
     }
 }
 
-/* 4. Boucle principale multi-onglets réactive */
+/* 4. Boucle principale */
 void rap_events_run_loop(rap_context_t *ctx) {
     (void)ctx;
     while (1) {
-        /* Récupération dynamique du contexte du tampon actif */
         rap_context_t *cur_ctx = rap_buffer_get_active();
 
         if (rap_term_check_resize()) {
@@ -224,9 +314,7 @@ void rap_events_run_loop(rap_context_t *ctx) {
         ssize_t n = read(STDIN_FILENO, &c, 1);
 
         if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
+            if (errno == EINTR) continue;
             break;
         }
         if (n == 0) break;
@@ -235,8 +323,7 @@ void rap_events_run_loop(rap_context_t *ctx) {
             cur_ctx->status_msg[0] = '\0';
         }
 
-        /* Ctrl+W : Bascule d'onglet immédiate */
-        if (c == 23) {
+        if (c == 23) { /* Ctrl+W */
             rap_buffer_cycle(1);
             write(STDOUT_FILENO, "\033[H\033[2J", 7);
             continue;
@@ -247,26 +334,26 @@ void rap_events_run_loop(rap_context_t *ctx) {
             continue;
         }
 
-        if (c == 1) { /* Ctrl+A : Début de ligne */
+        if (c == 1) { /* Ctrl+A */
             rap_undo_reset_burst();
             rap_nav_bol(cur_ctx);
             rap_ops_clamp_cursor(cur_ctx);
             continue;
         }
 
-        if (c == 5) { /* Ctrl+E : Fin de ligne */
+        if (c == 5) { /* Ctrl+E */
             rap_undo_reset_burst();
             rap_nav_eol(cur_ctx);
             rap_ops_clamp_cursor(cur_ctx);
             continue;
         }
 
-        if (c == 26 || c == 21) { /* Ctrl+Z ou Ctrl+U : Undo */
+        if (c == 26 || c == 21) { /* Ctrl+Z / Ctrl+U */
             rap_undo_apply(cur_ctx);
             continue;
         }
 
-        if (c == 3) { /* Ctrl+C : Copier */
+        if (c == 3) { /* Ctrl+C */
             if (cur_ctx->is_selecting) {
                 uint32_t off1 = rap_ops_get_anchor_offset(cur_ctx);
                 uint32_t off2 = rap_ops_get_cursor_offset(cur_ctx);
@@ -280,7 +367,7 @@ void rap_events_run_loop(rap_context_t *ctx) {
             continue;
         }
 
-        if (c == 24) { /* Ctrl+X : Couper */
+        if (c == 24) { /* Ctrl+X */
             if (cur_ctx->is_selecting) {
                 uint32_t off1 = rap_ops_get_anchor_offset(cur_ctx);
                 uint32_t off2 = rap_ops_get_cursor_offset(cur_ctx);
@@ -295,14 +382,14 @@ void rap_events_run_loop(rap_context_t *ctx) {
             continue;
         }
 
-        if (c == 22) { /* Ctrl+V : Coller */
+        if (c == 22) { /* Ctrl+V */
             uint32_t insert_off = rap_ops_get_cursor_offset(cur_ctx);
             rap_clip_paste_bytes(cur_ctx, insert_off);
             cur_ctx->is_selecting = false;
             continue;
         }
 
-        if (c == 7) { /* Ctrl+G : Statistiques */
+        if (c == 7) { /* Ctrl+G */
             snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
                      RAP_ANSI_REVERSE " [INFO] %.48s | Ligne %u/%u | %u o | Clip: %u o " RAP_ANSI_RESET,
                      cur_ctx->file_path, cur_ctx->cursor_row + 1, cur_ctx->total_lines, cur_ctx->buffer_len, cur_ctx->clipboard.len);

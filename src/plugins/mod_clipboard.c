@@ -1,19 +1,22 @@
 /* ==============================================================================
  * SCRIPT      : src/plugins/mod_clipboard.c
- * RÉVISION    : Rev 1.5 (Strict Macro Routing Fix)
+ * RÉVISION    : Rev 1.7 (Universal CLI Copy/Cut/Paste & Targeted Macro Engine)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Correction du routage : renvoi impératif de -127 si l'opération
- *               n'est ni 'C' ni 'X', permettant aux commandes comme :3:90d
- *               d'atteindre le greffon mod_delete sans être court-circuitées.
+ * INTÉGRATION : Prise en charge complète du workflow en 2 étapes (:10c puis :15w/:15pp),
+ *               des commandes unitaires (:c, :x), de plages (:1:10c, :1:10x), du collage
+ *               au curseur (:pp) et des macros combinées (:1:10c:15w, :10c:15w).
+ *               Renvoi strict de -127 pour préserver mod_delete (:5d, :1:10d). 0-heap BSS.
  * FONCTIONS   :
- *   1. rap_clip_copy_range (Copie de lignes complètes)
+ *   1. rap_clip_copy_range (Copie de lignes complètes vers le presse-papiers BSS)
  *   2. rap_clip_cut_range (Coupe de lignes avec instantané d'annulation)
  *   3. rap_clip_paste_line (Collage de lignes avec instantané d'annulation)
- *   4. rap_clip_copy_bytes (Copie de sélection précise)
- *   5. rap_clip_cut_bytes (Coupe de sélection avec instantané d'annulation)
- *   6. rap_clip_paste_bytes (Collage précis avec instantané d'annulation)
- *   7. rap_clip_parse_line_macro (Parseur universel combiné et séquentiel)
- *   8. rap_plugin_mod_clipboard_init (Enregistrement du greffon en BSS)
+ *   4. rap_clip_copy_bytes (Copie de sélection précise d'octets)
+ *   5. rap_clip_cut_bytes (Coupe de sélection précise avec instantané d'annulation)
+ *   6. rap_clip_paste_bytes (Collage précis avec repositionnement du curseur)
+ *   7. rap_cmd_clip_paste_pp (Point d'entrée CLI pour la commande :pp au curseur)
+ *   8. rap_cmd_clip_info (Point d'entrée CLI pour la commande :clip d'inspection)
+ *   9. rap_clip_parse_line_macro (Parseur universel multi-syntaxe : 2 étapes et macros)
+ *  10. rap_plugin_mod_clipboard_init (Enregistrement persistant des greffons en BSS)
  * ============================================================================== */
 
 #define _POSIX_C_SOURCE 200809L
@@ -21,11 +24,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 
 #include "rap_edit_plugin.h"
 #include "rap_edit_config.h"
 #include "rap_edit_undo.h"
+#include "rap_edit_ops.h"
 
 extern int rap_core_index_lines(rap_context_t *ctx);
 
@@ -205,7 +210,7 @@ int rap_clip_cut_bytes(rap_context_t *ctx, uint32_t start_off, uint32_t end_off)
     return 0;
 }
 
-/* 6. Collage de sélection précise avec snapshot Undo */
+/* 6. Collage précis avec repositionnement du curseur */
 int rap_clip_paste_bytes(rap_context_t *ctx, uint32_t insert_off) {
     if (!ctx || ctx->is_readonly || ctx->clipboard.len == 0) return -1;
     if (ctx->buffer_len + ctx->clipboard.len >= RAP_STATIC_BUFFER_SIZE) return -2;
@@ -226,97 +231,243 @@ int rap_clip_paste_bytes(rap_context_t *ctx, uint32_t insert_off) {
     ctx->is_dirty = true;
     rap_core_index_lines(ctx);
 
+    rap_ops_set_cursor_from_offset(ctx, insert_off + ctx->clipboard.len);
+    rap_ops_clamp_cursor(ctx);
+
     return 0;
 }
 
-/* 7. Parseur universel de commandes */
+/* 7. Point d'entrée pour la commande :pp (collage au curseur) */
+static int rap_cmd_clip_paste_pp(rap_context_t *ctx, const char *args) {
+    (void)args;
+    if (!ctx || ctx->is_readonly) return -1;
+
+    if (ctx->clipboard.len == 0) {
+        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                 RAP_ANSI_YELLOW "[!] Presse-papiers vide. Rien à coller." RAP_ANSI_RESET);
+        return 0;
+    }
+
+    if (ctx->clipboard.is_line_block) {
+        uint32_t target = ctx->cursor_row + 1;
+        rap_clip_paste_line(ctx, target);
+        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                 RAP_ANSI_BOLD "[✓] %u octets collés à la ligne %u" RAP_ANSI_RESET,
+                 ctx->clipboard.len, target);
+    } else {
+        uint32_t off = rap_ops_get_cursor_offset(ctx);
+        rap_clip_paste_bytes(ctx, off);
+        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                 RAP_ANSI_BOLD "[✓] %u octets collés avec succès" RAP_ANSI_RESET,
+                 ctx->clipboard.len);
+    }
+    return 0;
+}
+
+/* 8. Point d'entrée pour la commande :clip (inspection du contenu) */
+static int rap_cmd_clip_info(rap_context_t *ctx, const char *args) {
+    (void)args;
+    if (!ctx) return -1;
+    snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+             RAP_ANSI_REVERSE " [CLIPBOARD] %u octets | Mode: %s " RAP_ANSI_RESET,
+             ctx->clipboard.len,
+             ctx->clipboard.is_line_block ? "Bloc de lignes" : "Sélection brute");
+    return 0;
+}
+
+/* 9. Parseur universel de commandes CLI pour le presse-papiers */
 int rap_clip_parse_line_macro(rap_context_t *ctx, const char *cmd) {
-    if (!ctx || !cmd) return -1;
+    if (!ctx || !cmd || *cmd == '\0') return -127;
 
-    int start = 0, end = 0, dest = 0;
-    char op = 0, paste_flag = 0;
-    char trailing = 0;
+    /* A. Commande directe :pp */
+    if (strcasecmp(cmd, "pp") == 0) {
+        return rap_cmd_clip_paste_pp(ctx, NULL);
+    }
 
-    /* Format 1 : Macro complète <deb>:<fin>[C|X]:<dest>[W|P] */
-    if (sscanf(cmd, "%d:%d%c:%d%c", &start, &end, &op, &dest, &paste_flag) == 5) {
-        op = (char)toupper((unsigned char)op);
-        paste_flag = (char)toupper((unsigned char)paste_flag);
-
-        if ((op != 'C' && op != 'X') || (paste_flag != 'W' && paste_flag != 'P')) {
-            return -127;
+    /* B. Ligne courante unitaire : :c ou :x */
+    if ((cmd[0] == 'c' || cmd[0] == 'C' || cmd[0] == 'x' || cmd[0] == 'X') && cmd[1] == '\0') {
+        uint32_t cur = ctx->cursor_row + 1;
+        if (cmd[0] == 'c' || cmd[0] == 'C') {
+            int res = rap_clip_copy_range(ctx, cur, cur);
+            if (res == 0) {
+                snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                         RAP_ANSI_BOLD "[✓] Ligne %u copiée dans le presse-papiers (%u octets)" RAP_ANSI_RESET,
+                         cur, ctx->clipboard.len);
+            }
+            return res;
+        } else {
+            int res = rap_clip_cut_range(ctx, cur, cur);
+            if (res == 0) {
+                snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                         RAP_ANSI_BOLD "[✓] Ligne %u coupée vers le presse-papiers (%u octets)" RAP_ANSI_RESET,
+                         cur, ctx->clipboard.len);
+            }
+            return res;
         }
+    }
 
-        if (start < 1 || end < start || dest < 1) {
-            printf("\033[%d;1H\033[K[!] Bornes invalides : deb=%d fin=%d dest=%d", ctx->term_rows, start, end, dest);
-            fflush(stdout);
+    /* C. Les autres commandes débutent obligatoirement par un chiffre */
+    if (cmd[0] < '0' || cmd[0] > '9') {
+        return -127;
+    }
+
+    const char *p = cmd;
+    int num1 = atoi(p);
+    while (*p >= '0' && *p <= '9') p++;
+
+    /* Forme C1 : Collage sous une ligne (<dest>w, <dest>pp, <dest>p, ex: :15w, :15pp) */
+    if (strcasecmp(p, "w") == 0 || strcasecmp(p, "pp") == 0 || strcasecmp(p, "p") == 0) {
+        if (ctx->clipboard.len == 0) {
+            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                     RAP_ANSI_YELLOW "[!] Presse-papiers vide. Rien à coller." RAP_ANSI_RESET);
             return 0;
         }
-
-        if (op == 'C') {
-            if (rap_clip_copy_range(ctx, (uint32_t)start, (uint32_t)end) == 0) {
-                rap_clip_paste_line(ctx, (uint32_t)dest);
-                return 0;
-            }
-        } else if (op == 'X') {
-            if (rap_clip_cut_range(ctx, (uint32_t)start, (uint32_t)end) == 0) {
-                rap_clip_paste_line(ctx, (uint32_t)dest);
-                return 0;
-            }
-        }
+        int dest = (num1 < 1) ? 1 : num1;
+        rap_clip_paste_line(ctx, (uint32_t)dest);
+        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                 RAP_ANSI_BOLD "[✓] %u octets collés à la ligne %d" RAP_ANSI_RESET,
+                 ctx->clipboard.len, dest);
         return 0;
     }
 
-    /* Format 2 : Étape unitaire couper/copier <deb>:<fin>[C|X] */
-    if (sscanf(cmd, "%d:%d%c%c", &start, &end, &op, &trailing) >= 3) {
-        op = (char)toupper((unsigned char)op);
-
-        /* Si l'opérateur n'est ni C ni X (ex: 'd'), ne pas intercepter ! */
-        if (op != 'C' && op != 'X') {
-            return -127;
-        }
-
-        if (op == 'C') {
-            if (rap_clip_copy_range(ctx, (uint32_t)start, (uint32_t)end) == 0) {
-                printf("\033[%d;1H\033[K[✓] Lignes %d à %d copiées dans le presse-papiers (%u octets).", 
-                       ctx->term_rows, start, end, ctx->clipboard.len);
-                fflush(stdout);
-                return 0;
+    /* Forme C2 : Copie/Coupe unitaire (<num>c, <num>x, ex: :10c, :10x) ou combinée :10c:15w */
+    if (*p == 'c' || *p == 'C' || *p == 'x' || *p == 'X') {
+        char op = (char)toupper((unsigned char)*p);
+        p++;
+        if (*p == '\0') {
+            int line = (num1 < 1) ? 1 : num1;
+            if (op == 'C') {
+                int res = rap_clip_copy_range(ctx, (uint32_t)line, (uint32_t)line);
+                if (res == 0) {
+                    snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                             RAP_ANSI_BOLD "[✓] Ligne %d copiée dans le presse-papiers (%u octets)" RAP_ANSI_RESET,
+                             line, ctx->clipboard.len);
+                }
+                return res;
+            } else {
+                int res = rap_clip_cut_range(ctx, (uint32_t)line, (uint32_t)line);
+                if (res == 0) {
+                    snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                             RAP_ANSI_BOLD "[✓] Ligne %d coupée vers le presse-papiers (%u octets)" RAP_ANSI_RESET,
+                             line, ctx->clipboard.len);
+                }
+                return res;
             }
-        } else if (op == 'X') {
-            if (rap_clip_cut_range(ctx, (uint32_t)start, (uint32_t)end) == 0) {
-                printf("\033[%d;1H\033[K[✓] Lignes %d à %d coupées vers le presse-papiers (%u octets).", 
-                       ctx->term_rows, start, end, ctx->clipboard.len);
-                fflush(stdout);
-                return 0;
+        } else if (*p == ':') {
+            /* Macro combinée unitaire : :10c:15w ou :10c:15pp */
+            p++;
+            if (*p >= '0' && *p <= '9') {
+                int dest = atoi(p);
+                while (*p >= '0' && *p <= '9') p++;
+                if (*p == '\0' || strcasecmp(p, "w") == 0 || strcasecmp(p, "p") == 0 || strcasecmp(p, "pp") == 0) {
+                    int line = (num1 < 1) ? 1 : num1;
+                    if (dest < 1) dest = 1;
+                    if (op == 'C') {
+                        if (rap_clip_copy_range(ctx, (uint32_t)line, (uint32_t)line) == 0) {
+                            rap_clip_paste_line(ctx, (uint32_t)dest);
+                            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                                     RAP_ANSI_BOLD "[✓] Ligne %d copiée et collée en ligne %d (%u octets)" RAP_ANSI_RESET,
+                                     line, dest, ctx->clipboard.len);
+                            return 0;
+                        }
+                    } else {
+                        if (rap_clip_cut_range(ctx, (uint32_t)line, (uint32_t)line) == 0) {
+                            rap_clip_paste_line(ctx, (uint32_t)dest);
+                            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                                     RAP_ANSI_BOLD "[✓] Ligne %d déplacée en ligne %d (%u octets)" RAP_ANSI_RESET,
+                                     line, dest, ctx->clipboard.len);
+                            return 0;
+                        }
+                    }
+                    return 0;
+                }
             }
         }
-        return 0;
+        return -127;
     }
 
-    /* Format 3 : Étape unitaire coller <dest>[W|P] */
-    if (sscanf(cmd, "%d%c%c", &dest, &paste_flag, &trailing) >= 2) {
-        paste_flag = (char)toupper((unsigned char)paste_flag);
-        if (paste_flag == 'W' || paste_flag == 'P') {
-            if (ctx->clipboard.len == 0) {
-                printf("\033[%d;1H\033[K[!] Presse-papiers vide. Rien à coller.", ctx->term_rows);
-                fflush(stdout);
-                return 0;
+    /* Forme C3 : Plage (<deb>:<fin>c, <deb>:<fin>x, ex: :1:10c) ou combinée :1:10c:15w */
+    if (*p == ':') {
+        p++;
+        if (*p < '0' || *p > '9') return -127;
+        int num2 = atoi(p);
+        while (*p >= '0' && *p <= '9') p++;
+
+        if (*p == 'c' || *p == 'C' || *p == 'x' || *p == 'X') {
+            char op = (char)toupper((unsigned char)*p);
+            p++;
+            if (*p == '\0') {
+                int start = (num1 < 1) ? 1 : num1;
+                int end = (num2 < start) ? start : num2;
+                if (op == 'C') {
+                    int res = rap_clip_copy_range(ctx, (uint32_t)start, (uint32_t)end);
+                    if (res == 0) {
+                        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                                 RAP_ANSI_BOLD "[✓] Lignes %d à %d copiées dans le presse-papiers (%u octets)" RAP_ANSI_RESET,
+                                 start, end, ctx->clipboard.len);
+                    }
+                    return res;
+                } else {
+                    int res = rap_clip_cut_range(ctx, (uint32_t)start, (uint32_t)end);
+                    if (res == 0) {
+                        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                                 RAP_ANSI_BOLD "[✓] Lignes %d à %d coupées vers le presse-papiers (%u octets)" RAP_ANSI_RESET,
+                                 start, end, ctx->clipboard.len);
+                    }
+                    return res;
+                }
+            } else if (*p == ':') {
+                p++;
+                if (*p >= '0' && *p <= '9') {
+                    int dest = atoi(p);
+                    while (*p >= '0' && *p <= '9') p++;
+                    if (*p == '\0' || strcasecmp(p, "w") == 0 || strcasecmp(p, "p") == 0 || strcasecmp(p, "pp") == 0) {
+                        int start = (num1 < 1) ? 1 : num1;
+                        int end = (num2 < start) ? start : num2;
+                        if (dest < 1) dest = 1;
+                        if (op == 'C') {
+                            if (rap_clip_copy_range(ctx, (uint32_t)start, (uint32_t)end) == 0) {
+                                rap_clip_paste_line(ctx, (uint32_t)dest);
+                                snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                                         RAP_ANSI_BOLD "[✓] Lignes %d à %d copiées et collées en ligne %d (%u octets)" RAP_ANSI_RESET,
+                                         start, end, dest, ctx->clipboard.len);
+                                return 0;
+                            }
+                        } else {
+                            if (rap_clip_cut_range(ctx, (uint32_t)start, (uint32_t)end) == 0) {
+                                rap_clip_paste_line(ctx, (uint32_t)dest);
+                                snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                                         RAP_ANSI_BOLD "[✓] Lignes %d à %d déplacées en ligne %d (%u octets)" RAP_ANSI_RESET,
+                                         start, end, dest, ctx->clipboard.len);
+                                return 0;
+                            }
+                        }
+                        return 0;
+                    }
+                }
             }
-            rap_clip_paste_line(ctx, (uint32_t)dest);
-            return 0;
         }
+        /* Si ce n'est ni C ni X (ex: :1:10d), laisser impérativement passer vers mod_delete */
+        return -127;
     }
 
     return -127;
 }
 
-/* 8. Enregistrement */
+/* 10. Enregistrement persistant en mémoire statique BSS */
 int rap_plugin_mod_clipboard_init(void) {
-    rap_plugin_t plug_clip = {
+    static rap_plugin_t s_plug_clip = {
         .cmd_trigger = "clip",
         .description = "Affiche la taille du contenu actuel du presse-papiers",
-        .execute     = NULL
+        .execute     = rap_cmd_clip_info
     };
-    rap_plugin_register(&plug_clip);
+    static rap_plugin_t s_plug_pp = {
+        .cmd_trigger = "pp",
+        .description = "Colle le presse-papiers à la position courante",
+        .execute     = rap_cmd_clip_paste_pp
+    };
+
+    rap_plugin_register(&s_plug_clip);
+    rap_plugin_register(&s_plug_pp);
     return 0;
 }

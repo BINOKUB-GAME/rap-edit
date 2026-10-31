@@ -1,9 +1,9 @@
 /* ==============================================================================
  * SCRIPT      : src/cli/rap_edit_main.c
- * RÉVISION    : Rev 3.5 (Multi-Buffer Initialization & Loading)
+ * RÉVISION    : Rev 3.6 (Buffer Plugin Registration Priority)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Prise en charge des arguments multiples (argv[1]..argv[4]) pour
- *               l'ouverture simultanée de plusieurs fichiers dans les onglets.
+ * INTÉGRATION : Enregistrement de rap_plugin_mod_buffer_init en tête de liste
+ *               pour conférer une priorité absolue aux commandes de tampons.
  * FONCTIONS   :
  *   1. main (Point d'entrée du binaire)
  * ============================================================================== */
@@ -18,6 +18,7 @@
 #include "rap_edit_events.h"
 #include "rap_edit_buffer.h"
 
+extern int rap_plugin_mod_buffer_init(void);
 extern int rap_plugin_mod_text_init(void);
 extern int rap_plugin_mod_io_init(void);
 extern int rap_plugin_mod_clipboard_init(void);
@@ -27,6 +28,7 @@ extern int rap_plugin_mod_undo_init(void);
 extern int rap_plugin_mod_delete_init(void);
 extern int rap_plugin_mod_replace_init(void);
 
+/* 1. Point d'entrée du binaire */
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <fichier1> [fichier2] [fichier3] [fichier4]\n", argv[0]);
@@ -35,6 +37,8 @@ int main(int argc, char *argv[]) {
 
     rap_buffer_init();
 
+    /* Priorité absolue aux commandes du gestionnaire de tampons */
+    rap_plugin_mod_buffer_init();
     rap_plugin_mod_text_init();
     rap_plugin_mod_io_init();
     rap_plugin_mod_clipboard_init();
@@ -43,7 +47,6 @@ int main(int argc, char *argv[]) {
     rap_plugin_mod_undo_init();
     rap_plugin_mod_delete_init();
     rap_plugin_mod_replace_init();
-    rap_plugin_mod_buffer_init();
 
     int loaded_count = 0;
     for (int i = 1; i < argc && loaded_count < RAP_MAX_BUFFERS; ++i) {

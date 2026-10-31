@@ -1,10 +1,10 @@
 /* ==============================================================================
  * SCRIPT      : src/plugins/mod_buffer.c
- * RÉVISION    : Rev 1.1 (Wrestrict Decoupling & Stack Isolation)
+ * RÉVISION    : Rev 1.4 (Wrestrict Elimination in Next/Prev Cycling)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Élimination de l'avertissement GCC -Wrestrict dans rap_cmd_tab_switch
- *               par découplage du nom de fichier dans un tampon de pile indépendant.
- *               Maintien strict du 0-heap BSS et de la synchronisation clipboard.
+ * INTÉGRATION : Découplage du nom de fichier sur la pile locale dans rap_cmd_tab_next
+ *               et rap_cmd_tab_prev pour supprimer formellement les avertissements
+ *               GCC -Wrestrict. Maintien strict de la conformité 0-heap BSS.
  * FONCTIONS   :
  *   1. rap_buffer_init (Remise à zéro des contextes BSS)
  *   2. rap_buffer_load_file (Lecture et indexation d'un document dans un slot)
@@ -14,16 +14,25 @@
  *   6. rap_buffer_set_active_idx (Changement d'onglet avec copie du presse-papiers)
  *   7. rap_buffer_cycle (Bascule relative +1 / -1)
  *   8. rap_buffer_get_count (Lecture du nombre de fichiers ouverts)
- *   9. rap_cmd_tab_switch (Point d'entrée pour :1..:4 et :#1..:#4 sans -Wrestrict)
- *  10. rap_cmd_tab_next (Point d'entrée pour :n et :next)
- *  11. rap_cmd_tab_prev (Point d'entrée pour :p et :prev)
- *  12. rap_cmd_tab_list (Point d'entrée pour :b / liste des tampons)
- *  13. rap_plugin_mod_buffer_init (Enregistrement des greffons dans la table BSS)
+ *   9. rap_buffer_close_active (Fermeture et compactage statique du tableau BSS)
+ *  10. rap_buffer_switch_to (Bascule ciblée vers un indice d'onglet 1-based)
+ *  11. rap_cmd_tab_1 (Point d'entrée direct onglet #1)
+ *  12. rap_cmd_tab_2 (Point d'entrée direct onglet #2)
+ *  13. rap_cmd_tab_3 (Point d'entrée direct onglet #3)
+ *  14. rap_cmd_tab_4 (Point d'entrée direct onglet #4)
+ *  15. rap_cmd_tab_switch (Point d'entrée paramétré :tab <num>)
+ *  16. rap_cmd_tab_next (Point d'entrée :n et :next isolé de tout alias mémoire)
+ *  17. rap_cmd_tab_prev (Point d'entrée :p et :prev isolé de tout alias mémoire)
+ *  18. rap_cmd_tab_list (Point d'entrée pour :b / liste des tampons)
+ *  19. rap_cmd_tab_close (Point d'entrée pour :bd et :close)
+ *  20. rap_cmd_tab_close_force (Point d'entrée pour :bd! et :close!)
+ *  21. rap_plugin_mod_buffer_init (Enregistrement des greffons dans la table BSS)
  * ============================================================================== */
 
 #define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -44,7 +53,7 @@ void rap_buffer_init(void) {
     s_buffer_count = 0;
 }
 
-/* 2. Chargement d'un fichier dans un slot */
+/* 2. Chargement d'un fichier */
 int rap_buffer_load_file(uint32_t idx, const char *filepath) {
     if (idx >= RAP_MAX_BUFFERS || !filepath) return -1;
     int res = rap_core_load_file(&s_buffers[idx], filepath);
@@ -76,7 +85,6 @@ uint32_t rap_buffer_get_active_idx(void) {
 int rap_buffer_set_active_idx(uint32_t idx) {
     if (idx >= s_buffer_count) return -1;
     if (idx != s_active_idx) {
-        /* Propagation immédiate du presse-papiers vers le document cible */
         s_buffers[idx].clipboard = s_buffers[s_active_idx].clipboard;
         s_active_idx = idx;
     }
@@ -100,26 +108,54 @@ uint32_t rap_buffer_get_count(void) {
     return s_buffer_count;
 }
 
-/* 9. Commande :1 .. :4 ou :#1 .. :#4 (Découplée pour éliminer -Wrestrict) */
-static int rap_cmd_tab_switch(rap_context_t *ctx, const char *args) {
-    (void)ctx;
-    if (!args || *args == '\0') return -1;
+/* 9. Fermeture atomique et compactage de la mémoire BSS */
+int rap_buffer_close_active(bool force) {
+    if (s_buffer_count == 0) return 0;
 
-    const char *p = args;
-    if (*p == '#') p++;
+    rap_context_t *cur = &s_buffers[s_active_idx];
+    if (cur->is_dirty && !force) {
+        snprintf(cur->status_msg, sizeof(cur->status_msg),
+                 RAP_ANSI_YELLOW "[!] Modifications en cours. Utilisez :w! ou :bd! pour forcer" RAP_ANSI_RESET);
+        return -1;
+    }
 
-    int target = *p - '0';
-    if (target >= 1 && (uint32_t)target <= s_buffer_count) {
-        rap_buffer_set_active_idx((uint32_t)(target - 1));
+    if (s_buffer_count == 1) {
+        exit(0);
+    }
+
+    rap_clipboard_t keep_clip = cur->clipboard;
+
+    for (uint32_t i = s_active_idx; i + 1 < s_buffer_count; ++i) {
+        s_buffers[i] = s_buffers[i + 1];
+    }
+
+    memset(&s_buffers[s_buffer_count - 1], 0, sizeof(rap_context_t));
+    s_buffer_count--;
+
+    if (s_active_idx >= s_buffer_count) {
+        s_active_idx = s_buffer_count - 1;
+    }
+
+    s_buffers[s_active_idx].clipboard = keep_clip;
+    write(STDOUT_FILENO, "\033[H\033[2J", 7);
+
+    snprintf(s_buffers[s_active_idx].status_msg, sizeof(s_buffers[s_active_idx].status_msg),
+             RAP_ANSI_BOLD "[✓] Onglet fermé avec succès" RAP_ANSI_RESET);
+    return 0;
+}
+
+/* 10. Bascule ciblée vers un indice d'onglet (1-based) */
+static int rap_buffer_switch_to(uint32_t target) {
+    if (target >= 1 && target <= s_buffer_count) {
+        rap_buffer_set_active_idx(target - 1);
         write(STDOUT_FILENO, "\033[H\033[2J", 7);
 
-        /* Copie préalable sur la pile locale pour garantir la disjonction mémoire */
         char target_name[64];
         strncpy(target_name, s_buffers[s_active_idx].file_path, sizeof(target_name) - 1);
         target_name[sizeof(target_name) - 1] = '\0';
 
         snprintf(s_buffers[s_active_idx].status_msg, sizeof(s_buffers[s_active_idx].status_msg),
-                 RAP_ANSI_BOLD "[✓] Bascule vers l'onglet #%d : '%.48s'" RAP_ANSI_RESET,
+                 RAP_ANSI_BOLD "[✓] Bascule vers l'onglet #%u : '%.48s'" RAP_ANSI_RESET,
                  target, target_name);
         return 0;
     }
@@ -129,23 +165,73 @@ static int rap_cmd_tab_switch(rap_context_t *ctx, const char *args) {
     return -2;
 }
 
-/* 10. Commande :n / :next */
+/* 11. Point d'entrée direct onglet #1 */
+static int rap_cmd_tab_1(rap_context_t *ctx, const char *args) {
+    (void)ctx; (void)args;
+    return rap_buffer_switch_to(1);
+}
+
+/* 12. Point d'entrée direct onglet #2 */
+static int rap_cmd_tab_2(rap_context_t *ctx, const char *args) {
+    (void)ctx; (void)args;
+    return rap_buffer_switch_to(2);
+}
+
+/* 13. Point d'entrée direct onglet #3 */
+static int rap_cmd_tab_3(rap_context_t *ctx, const char *args) {
+    (void)ctx; (void)args;
+    return rap_buffer_switch_to(3);
+}
+
+/* 14. Point d'entrée direct onglet #4 */
+static int rap_cmd_tab_4(rap_context_t *ctx, const char *args) {
+    (void)ctx; (void)args;
+    return rap_buffer_switch_to(4);
+}
+
+/* 15. Point d'entrée paramétré :tab <num> */
+static int rap_cmd_tab_switch(rap_context_t *ctx, const char *args) {
+    (void)ctx;
+    if (!args || *args == '\0') return -1;
+    const char *p = args;
+    while (*p == ' ' || *p == '#') p++;
+    int target = *p - '0';
+    return rap_buffer_switch_to((uint32_t)target);
+}
+
+/* 16. Commande :n et :next (Découplée pour éliminer -Wrestrict) */
 static int rap_cmd_tab_next(rap_context_t *ctx, const char *args) {
     (void)ctx; (void)args;
     rap_buffer_cycle(1);
     write(STDOUT_FILENO, "\033[H\033[2J", 7);
+
+    char target_name[64];
+    strncpy(target_name, s_buffers[s_active_idx].file_path, sizeof(target_name) - 1);
+    target_name[sizeof(target_name) - 1] = '\0';
+
+    snprintf(s_buffers[s_active_idx].status_msg, sizeof(s_buffers[s_active_idx].status_msg),
+             RAP_ANSI_BOLD "[✓] Onglet #%u : '%.48s'" RAP_ANSI_RESET,
+             s_active_idx + 1, target_name);
     return 0;
 }
 
-/* 11. Commande :p / :prev */
+/* 17. Commande :p et :prev (Découplée pour éliminer -Wrestrict) */
 static int rap_cmd_tab_prev(rap_context_t *ctx, const char *args) {
     (void)ctx; (void)args;
     rap_buffer_cycle(-1);
     write(STDOUT_FILENO, "\033[H\033[2J", 7);
+
+    char target_name[64];
+    strncpy(target_name, s_buffers[s_active_idx].file_path, sizeof(target_name) - 1);
+    target_name[sizeof(target_name) - 1] = '\0';
+
+    snprintf(s_buffers[s_active_idx].status_msg, sizeof(s_buffers[s_active_idx].status_msg),
+             RAP_ANSI_BOLD "[✓] Onglet #%u : '%.48s'" RAP_ANSI_RESET,
+             s_active_idx + 1, target_name);
     return 0;
 }
 
-/* 12. Commande :b (liste des documents) */
+/* 18. Commande :b (liste des documents) */
 static int rap_cmd_tab_list(rap_context_t *ctx, const char *args) {
     (void)args;
     char list_buf[192];
@@ -166,23 +252,51 @@ static int rap_cmd_tab_list(rap_context_t *ctx, const char *args) {
     return 0;
 }
 
-/* 13. Enregistrement des déclencheurs dans la table des greffons */
+/* 19. Commande :bd et :close */
+static int rap_cmd_tab_close(rap_context_t *ctx, const char *args) {
+    (void)ctx;
+    bool force = false;
+    if (args && (strcmp(args, "!") == 0)) force = true;
+    return rap_buffer_close_active(force);
+}
+
+/* 20. Commande :bd! et :close! (Fermeture forcée garantie) */
+static int rap_cmd_tab_close_force(rap_context_t *ctx, const char *args) {
+    (void)ctx; (void)args;
+    return rap_buffer_close_active(true);
+}
+
+/* 21. Enregistrement des greffons dans la table BSS */
 int rap_plugin_mod_buffer_init(void) {
-    static rap_plugin_t plug_t1 = { .cmd_trigger = "#1", .description = "Bascule onglet #1", .execute = rap_cmd_tab_switch };
-    static rap_plugin_t plug_t2 = { .cmd_trigger = "#2", .description = "Bascule onglet #2", .execute = rap_cmd_tab_switch };
-    static rap_plugin_t plug_t3 = { .cmd_trigger = "#3", .description = "Bascule onglet #3", .execute = rap_cmd_tab_switch };
-    static rap_plugin_t plug_t4 = { .cmd_trigger = "#4", .description = "Bascule onglet #4", .execute = rap_cmd_tab_switch };
-    static rap_plugin_t plug_nxt = { .cmd_trigger = "n",  .description = "Onglet suivant",    .execute = rap_cmd_tab_next };
-    static rap_plugin_t plug_prv = { .cmd_trigger = "p",  .description = "Onglet précédent",  .execute = rap_cmd_tab_prev };
-    static rap_plugin_t plug_lst = { .cmd_trigger = "b",  .description = "Liste des onglets", .execute = rap_cmd_tab_list };
+    static rap_plugin_t plug_t1   = { .cmd_trigger = "#1",     .description = "Bascule onglet #1",  .execute = rap_cmd_tab_1 };
+    static rap_plugin_t plug_t2   = { .cmd_trigger = "#2",     .description = "Bascule onglet #2",  .execute = rap_cmd_tab_2 };
+    static rap_plugin_t plug_t3   = { .cmd_trigger = "#3",     .description = "Bascule onglet #3",  .execute = rap_cmd_tab_3 };
+    static rap_plugin_t plug_t4   = { .cmd_trigger = "#4",     .description = "Bascule onglet #4",  .execute = rap_cmd_tab_4 };
+    static rap_plugin_t plug_tab  = { .cmd_trigger = "tab",    .description = "Bascule par index",   .execute = rap_cmd_tab_switch };
+    static rap_plugin_t plug_n    = { .cmd_trigger = "n",      .description = "Onglet suivant",     .execute = rap_cmd_tab_next };
+    static rap_plugin_t plug_nxt  = { .cmd_trigger = "next",   .description = "Onglet suivant",     .execute = rap_cmd_tab_next };
+    static rap_plugin_t plug_p    = { .cmd_trigger = "p",      .description = "Onglet précédent",   .execute = rap_cmd_tab_prev };
+    static rap_plugin_t plug_prv  = { .cmd_trigger = "prev",   .description = "Onglet précédent",   .execute = rap_cmd_tab_prev };
+    static rap_plugin_t plug_lst  = { .cmd_trigger = "b",      .description = "Liste des onglets",  .execute = rap_cmd_tab_list };
+    static rap_plugin_t plug_bd   = { .cmd_trigger = "bd",     .description = "Fermer onglet",      .execute = rap_cmd_tab_close };
+    static rap_plugin_t plug_bdf  = { .cmd_trigger = "bd!",    .description = "Fermer (forcer)",    .execute = rap_cmd_tab_close_force };
+    static rap_plugin_t plug_cls  = { .cmd_trigger = "close",  .description = "Fermer onglet",      .execute = rap_cmd_tab_close };
+    static rap_plugin_t plug_clsf = { .cmd_trigger = "close!", .description = "Fermer (forcer)",    .execute = rap_cmd_tab_close_force };
 
     rap_plugin_register(&plug_t1);
     rap_plugin_register(&plug_t2);
     rap_plugin_register(&plug_t3);
     rap_plugin_register(&plug_t4);
+    rap_plugin_register(&plug_tab);
+    rap_plugin_register(&plug_n);
     rap_plugin_register(&plug_nxt);
+    rap_plugin_register(&plug_p);
     rap_plugin_register(&plug_prv);
     rap_plugin_register(&plug_lst);
+    rap_plugin_register(&plug_bd);
+    rap_plugin_register(&plug_bdf);
+    rap_plugin_register(&plug_cls);
+    rap_plugin_register(&plug_clsf);
 
     return 0;
 }
