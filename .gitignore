@@ -1,0 +1,15 @@
+# Artefacts de compilation
+bin/
+*.o
+*.a
+*.so
+
+# Fichiers de tests locaux et temporaires
+boom.txt
+texte.txt
+*.tmp
+*~
+.*.swp
+
+# Fichiers système
+.DS_Store
