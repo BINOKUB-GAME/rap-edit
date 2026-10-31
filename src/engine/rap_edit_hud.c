@@ -1,15 +1,14 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_hud.c
- * RÉVISION    : Rev 1.3 (Dynamic Tabbed Multi-Buffer HUD)
+ * RÉVISION    : Rev 1.4 (Encoding Radar & Corruption HUD Badges)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Rendu du tableau de bord supérieur avec gestion des onglets (#1 à #4).
- *               Affichage dynamique du statut des tampons ([#1: active*] #2: idle),
- *               ancrage absolu VT100 sur les lignes 1 et 2 sans aucun caractère \n
- *               pour éliminer tout risque de défilement matériel parasite.
+ * INTÉGRATION : Analyse temps réel du tampon pour afficher l'indicateur de fin
+ *               de ligne [CRLF] (alerte Windows) / [LF] (Unix sain) et un badge
+ *               rouge d'alarme [!NUL] si des octets corrompus sont présents.
  * FONCTIONS   :
- *   1. rap_hud_append_str (Injection sécurisée de chaîne dans le tampon de trame)
+ *   1. rap_hud_append_str (Injection sécurisée de chaîne dans le tampon BSS)
  *   2. rap_hud_get_basename (Extraction du nom de fichier pur sans son arborescence)
- *   3. rap_hud_render_to_buf (Formatage et écriture atomique des 2 lignes du HUD)
+ *   3. rap_hud_render_to_buf (Formatage et écriture atomique du HUD enrichi)
  * ============================================================================== */
 
 #ifndef _POSIX_C_SOURCE
@@ -60,6 +59,15 @@ void rap_hud_render_to_buf(const rap_context_t *ctx, char *frame_buf, uint32_t *
     const char *state_label = ctx->is_dirty ? "[MODIFIÉ]" : "[SYNCHRONISÉ]";
     const char *mode_label = ctx->is_readonly ? "[RO]" : "[RW]";
 
+    /* Analyse d'intégrité du tampon actif (CRLF / NUL) */
+    bool has_crlf = false;
+    bool has_null = false;
+    for (uint32_t k = 0; k < ctx->buffer_len; ++k) {
+        if (ctx->raw_buffer[k] == '\r') has_crlf = true;
+        if (ctx->raw_buffer[k] == '\0') has_null = true;
+        if (has_crlf && has_null) break;
+    }
+
     /* Construction de la barre d'onglets dynamique */
     char tabs_buf[128];
     uint32_t t_off = 0;
@@ -88,7 +96,7 @@ void rap_hud_render_to_buf(const rap_context_t *ctx, char *frame_buf, uint32_t *
 
     char row_buf[RAP_HUD_ROW_BUF_SIZE];
 
-    /* --- LIGNE 1 : Barre d'onglets, privilège et répertoire courant --- */
+    /* --- LIGNE 1 : Onglets, Privilèges et Répertoire --- */
     rap_hud_append_str(frame_buf, frame_len, max_buf_size, "\033[1;1H" RAP_ANSI_REVERSE);
     snprintf(row_buf, sizeof(row_buf), " RAP-EDIT | %s| AUTH: %s | PWD: %s",
              tabs_buf[0] ? tabs_buf : "",
@@ -100,14 +108,16 @@ void rap_hud_render_to_buf(const rap_context_t *ctx, char *frame_buf, uint32_t *
     rap_hud_append_str(frame_buf, frame_len, max_buf_size, row_buf);
     rap_hud_append_str(frame_buf, frame_len, max_buf_size, "\033[K" RAP_ANSI_RESET);
 
-    /* --- LIGNE 2 : Détails du document actif, ligne, taille et statut --- */
+    /* --- LIGNE 2 : Détails techniques, Format LF/CRLF et Alarme NUL --- */
     rap_hud_append_str(frame_buf, frame_len, max_buf_size, "\033[2;1H" RAP_ANSI_REVERSE);
-    snprintf(row_buf, sizeof(row_buf), " CIBLE: %-18.18s | LIGNE: %u/%u | %u o | %s | %s",
+    snprintf(row_buf, sizeof(row_buf), " CIBLE: %-16.16s | L: %u/%u | %u o | %s | %s%s | %s",
              rap_hud_get_basename(ctx->file_path),
              ctx->cursor_row + 1,
              ctx->total_lines,
              ctx->buffer_len,
              mode_label,
+             has_crlf ? "[CRLF/DOS]" : "[LF/UNIX]",
+             has_null ? " [!NUL]" : "",
              state_label);
     if ((int)strlen(row_buf) >= ctx->term_cols) {
         row_buf[ctx->term_cols - 1] = '\0';

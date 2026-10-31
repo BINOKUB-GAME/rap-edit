@@ -1,17 +1,17 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_ui.c
- * RÉVISION    : Rev 4.1 (Pedagogical Clipboard & Explicit CLI Documentation)
+ * RÉVISION    : Rev 4.3 (Explicit Visual Rendering of ^M and ^@ Characters)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Refonte pédagogique exhaustive de la section PRESSE-PAPIERS de :help.
- *               Détail pas-à-pas des workflows : Visuel (Ctrl+C/V), CLI 2 étapes
- *               (:10c puis :15w/:15pp) et Macros combinées en 1 étape (:1:10c:15w).
+ * INTÉGRATION : Rendu visuel direct des retours chariot Windows sous la forme
+ *               explicite ^M en rouge vif et des octets nuls 0x00 sous la forme
+ *               ^@ en magenta. Élimination totale de l'invisibilité des corruptions.
  * FONCTIONS   :
  *   1. rap_ui_buf_append (Concaténation bornée dans le tampon BSS)
  *   2. rap_ui_buf_append_str (Concaténation rapide de chaînes statiques)
  *   3. rap_ui_is_comment_line (Détection déterministe d'une ligne de commentaire)
  *   4. rap_ui_update_dimensions (Interrogation des dimensions TTY via ioctl)
- *   5. rap_ui_render_screen (Rendu coordonné avec affichage UTF-8 et onglets)
- *   6. rap_ui_show_help_screen (Écran d'aide exhaustif, structuré et didactique)
+ *   5. rap_ui_render_screen (Rendu coordonné avec affichage UTF-8, ^M et ^@)
+ *   6. rap_ui_show_help_screen (Écran d'aide exhaustif)
  * ============================================================================== */
 
 #ifndef _POSIX_C_SOURCE
@@ -207,8 +207,19 @@ void rap_ui_render_screen(rap_context_t *ctx) {
                         highlight_active = false;
                     }
 
-                    if (ch == '\r' || ch == '\n') {
-                        /* Fin de ligne */
+                    /* Rendu explicite et sans fard des anomalies */
+                    if (ch == '\r') {
+                        /* Retour chariot Windows rendu visible sous la forme ^M en rouge */
+                        rap_ui_buf_append_str(RAP_ANSI_RED "^M" RAP_ANSI_RESET);
+                        if (is_comment) rap_ui_buf_append_str(RAP_ANSI_COMMENT);
+                        printed_cols += 2;
+                    } else if (ch == '\0') {
+                        /* Octet nul rendu visible sous la forme ^@ en magenta */
+                        rap_ui_buf_append_str(RAP_ANSI_MAGENTA "^@" RAP_ANSI_RESET);
+                        if (is_comment) rap_ui_buf_append_str(RAP_ANSI_COMMENT);
+                        printed_cols += 2;
+                    } else if (ch == '\n') {
+                        /* Fin de ligne Unix */
                     } else if (ch < 32 && ch != '\t') {
                         rap_ui_buf_append(".", 1);
                         printed_cols++;
@@ -243,7 +254,7 @@ void rap_ui_render_screen(rap_context_t *ctx) {
     } else if (ctx->is_selecting) {
         rap_ui_buf_append_str(RAP_ANSI_YELLOW " [SÉLECTION ACTIVE] Flèches: Étendre | Ctrl+C: Copier | Ctrl+X: Couper | Échap: Annuler " RAP_ANSI_RESET);
     } else {
-        rap_ui_buf_append_str(RAP_ANSI_REVERSE " [VISUEL] Ctrl+W: Onglet | :pp: Coller | :%s/anc/nouv/g: Remplacer | :u: Undo " RAP_ANSI_RESET);
+        rap_ui_buf_append_str(RAP_ANSI_REVERSE " [VISUEL] Ctrl+W: Onglet | :clean: Assainir | :%s/anc/nouv/g: Remplacer | :u: Undo " RAP_ANSI_RESET);
     }
     rap_ui_buf_append_str("\033[K");
 
@@ -272,34 +283,24 @@ void rap_ui_show_help_screen(void) {
     printf("   :b                       : Affiche la liste des tampons ouverts et modifiés (*)\n");
     printf("   :bd  /  :bd!             : Ferme l'onglet actif (sécurisé / forcé)\n\n");
 
-    printf(RAP_ANSI_BOLD " 2. PRESSE-PAPIERS ET COLLAGE (3 MODES DISPONIBLES) :" RAP_ANSI_RESET "\n");
-    printf(RAP_ANSI_CYAN "   A. Mode Visuel (Interactif) :" RAP_ANSI_RESET "\n");
-    printf("      Shift + Flèches       : Sélectionne une zone de texte à l'écran\n");
-    printf("      Ctrl+C / Ctrl+X       : Copie / Coupe la sélection dans le presse-papiers\n");
-    printf("      Ctrl+V                : Colle le texte directement à la position du curseur\n");
-    printf(RAP_ANSI_CYAN "   B. Mode CLI en 2 étapes (Copie puis Collage ciblé) :" RAP_ANSI_RESET "\n");
-    printf("      Étape 1 (Copie/Coupe) : :10c (copie ligne 10) | :10x (coupe ligne 10)\n");
-    printf("                              :1:10c (copie lignes 1 à 10) | :c (ligne courante)\n");
-    printf("      Étape 2 (Collage)     : :15w ou :15pp (colle le bloc à la ligne 15)\n");
-    printf("                              :pp (colle à la position exacte du curseur)\n");
-    printf(RAP_ANSI_CYAN "   C. Mode CLI en 1 étape (Macro combinée directe) :" RAP_ANSI_RESET "\n");
-    printf("      :1:10c:15w            : Copie les lignes 1 à 10 et les colle à la ligne 15\n");
-    printf("      :1:10x:15w            : Déplace (coupe et colle) les lignes 1 à 10 en ligne 15\n");
-    printf("      :10c:15w              : Copie la ligne 10 et la colle à la ligne 15\n");
-    printf("   *Presse-papiers unifié   : Copiez dans un fichier (#1), collez dans un autre (#2) !\n\n");
+    printf(RAP_ANSI_BOLD " 2. ASSAINISSEMENT TACTIQUE ANTI-CORRUPTION :" RAP_ANSI_RESET "\n");
+    printf("   :clean                   : Purge globale combinée (supprime ^M et ^@)\n");
+    printf("   :dos2unix  (ou :d2u)     : Supprime les retours chariot Windows (^M / \\r)\n");
+    printf("   :strip-null (ou :null)   : Élimine les octets nuls corrompus (^@ / \\0)\n");
+    printf("   Rendu visuel             : ^M s'affiche en rouge, ^@ s'affiche en magenta\n");
+    printf("   Annulation (:u)          : L'état initial reste restaurable instantanément\n\n");
 
-    printf(RAP_ANSI_BOLD " 3. NAVIGATION ET AFFICHAGE :" RAP_ANSI_RESET "\n");
+    printf(RAP_ANSI_BOLD " 3. PRESSE-PAPIERS ET COLLAGE (3 MODES) :" RAP_ANSI_RESET "\n");
+    printf("   Mode Visuel              : Shift + Flèches puis Ctrl+C / Ctrl+X / Ctrl+V\n");
+    printf("   Mode CLI 2 étapes        : :10c (copie ligne 10) puis :15w ou :15pp (colle en 15)\n");
+    printf("   Mode Macro directe       : :1:10c:15w (copie) | :1:10x:15w (déplace)\n");
+    printf("   Presse-papiers unifié    : Copiez dans un fichier (#1), collez dans un autre (#2)\n\n");
+
+    printf(RAP_ANSI_BOLD " 4. NAVIGATION, RECHERCHE ET ÉDITION :" RAP_ANSI_RESET "\n");
     printf("   Page-Up / Page-Down      : Défilement rapide d'une page écran complète\n");
-    printf("   Support UTF-8 complet    : Rendu natif des caractères accentués (é, è, à, É...)\n");
-    printf("   Défilement horizontal    : Automatique dès dépassement de largeur d'écran\n");
-    printf("   Commentaires (#, ;, //)  : Coloration atténuée automatique pour lisibilité\n");
-    printf("   Ctrl + A / Ctrl + E      : Début de ligne (col 0) / Fin de ligne extrême (EOL)\n\n");
-
-    printf(RAP_ANSI_BOLD " 4. RECHERCHE, SUBSTITUTION ET GESTION :" RAP_ANSI_RESET "\n");
-    printf("   :s/anc/nouv/g            : Remplace sur la ligne courante\n");
-    printf("   :%%s/anc/nouv/g           : Remplace dans TOUT le document\n");
+    printf("   :s/anc/nouv/g            : Remplace sur la ligne courante (:%%s partout)\n");
     printf("   :<num>d / :<deb>:<fin>d  : Supprime une ligne ou une plage (ex: :2d, :3:90d)\n");
-    printf("   :rch <motif>             : Recherche circulaire rapide sans latence\n");
+    printf("   :rch <motif>             : Recherche circulaire sans latence\n");
     printf("   :u  /  Ctrl + Z          : Annulation / Rétablissement instantané\n");
     printf("   :w!  /  :q!              : Sauvegarde atomique synchro (fsync) / Quitter\n\n");
 

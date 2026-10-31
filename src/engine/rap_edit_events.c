@@ -1,12 +1,12 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_events.c
- * RÉVISION    : Rev 1.14 (Strict Pure-Number Line Jump & Macro Unblocking)
+ * RÉVISION    : Rev 1.15 (Direct Sanitization Command Routing)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Validation stricte des saisies purement numériques (ex: :42) pour
- *               interdire l'interception indue des commandes CLI débutant par un chiffre
- *               (:10c, :10x, :15w, :15pp, :5d). Routage garanti vers les greffons.
+ * INTÉGRATION : Dispatch immédiat et garanti des commandes d'urgence :clean,
+ *               :dos2unix, :d2u, :strip-null et :null, éliminant tout risque de
+ *               rejet par saturation ou masquage de table.
  * FONCTIONS   :
- *   1. rap_events_handle_colon_command (Parseur et dispatch direct sécurisé CLI)
+ *   1. rap_events_handle_colon_command (Parseur et dispatch direct et prioritaire)
  *   2. rap_events_process_escape (Décodage étendu : flèches, Shift et Page-Up/Down)
  *   3. rap_events_prompt_command (Invite de commande avec tolérance EINTR)
  *   4. rap_events_run_loop (Boucle principale multi-onglets réactive)
@@ -31,6 +31,7 @@
 #include "rap_edit_delete.h"
 #include "rap_edit_replace.h"
 #include "rap_edit_buffer.h"
+#include "rap_edit_sanitize.h"
 
 extern void rap_ui_render_screen(rap_context_t *ctx);
 extern void rap_ui_update_dimensions(rap_context_t *ctx);
@@ -43,7 +44,7 @@ extern int  rap_clip_cut_bytes(rap_context_t *ctx, uint32_t start_off, uint32_t 
 extern int  rap_clip_paste_bytes(rap_context_t *ctx, uint32_t insert_off);
 extern int  rap_clip_parse_line_macro(rap_context_t *ctx, const char *cmd);
 
-/* 1. Parseur CLI avec sécurisation stricte des sauts de ligne */
+/* 1. Parseur CLI avec dispatch direct et prioritaire */
 static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd) {
     if (!cmd || *cmd == '\0') return;
 
@@ -96,7 +97,21 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* D. Autres commandes de gestion de tampons (:b, :bd, :close) */
+    /* D. Commandes tactiques d'assainissement direct (:clean, :dos2unix, :strip-null) */
+    if (strcmp(cmd, "clean") == 0) {
+        rap_sanitize_clean_all(ctx);
+        return;
+    }
+    if (strcmp(cmd, "dos2unix") == 0 || strcmp(cmd, "d2u") == 0) {
+        rap_sanitize_dos2unix(ctx);
+        return;
+    }
+    if (strcmp(cmd, "strip-null") == 0 || strcmp(cmd, "null") == 0) {
+        rap_sanitize_strip_null(ctx);
+        return;
+    }
+
+    /* E. Autres commandes de gestion de tampons (:b, :bd, :close) */
     if (strcmp(cmd, "b") == 0 ||
         strncmp(cmd, "tab", 3) == 0 ||
         strncmp(cmd, "bd", 2) == 0 ||
@@ -105,7 +120,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* E. Commandes système et d'aide */
+    /* F. Commandes système et d'aide */
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         rap_ui_show_help_screen();
         return;
@@ -127,7 +142,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* F. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
+    /* G. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
     bool is_pure_number = true;
     for (const char *k = cmd; *k != '\0'; ++k) {
         if (*k < '0' || *k > '9') {
@@ -157,7 +172,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* G. Macros d'édition (presse-papiers, suppression, substitution) */
+    /* H. Macros d'édition (presse-papiers, suppression, substitution) */
     if (rap_clip_parse_line_macro(ctx, cmd) == 0) {
         rap_ops_clamp_cursor(ctx);
         return;
@@ -173,7 +188,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* H. Dispatch générique pour tout autre greffon */
+    /* I. Dispatch générique pour tout autre greffon */
     int res = rap_plugin_dispatch(ctx, cmd);
     if (res == -127) {
         snprintf(ctx->status_msg, sizeof(ctx->status_msg),

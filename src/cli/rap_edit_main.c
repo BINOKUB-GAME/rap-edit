@@ -1,9 +1,9 @@
 /* ==============================================================================
  * SCRIPT      : src/cli/rap_edit_main.c
- * RÉVISION    : Rev 3.6 (Buffer Plugin Registration Priority)
+ * RÉVISION    : Rev 3.7 (Sanitize Plugin Integration)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Enregistrement de rap_plugin_mod_buffer_init en tête de liste
- *               pour conférer une priorité absolue aux commandes de tampons.
+ * INTÉGRATION : Ajout de l'enregistrement de rap_plugin_mod_sanitize_init
+ *               dans la séquence d'amorçage des greffons BSS.
  * FONCTIONS   :
  *   1. main (Point d'entrée du binaire)
  * ============================================================================== */
@@ -27,6 +27,7 @@ extern int rap_plugin_mod_search_init(void);
 extern int rap_plugin_mod_undo_init(void);
 extern int rap_plugin_mod_delete_init(void);
 extern int rap_plugin_mod_replace_init(void);
+extern int rap_plugin_mod_sanitize_init(void);
 
 /* 1. Point d'entrée du binaire */
 int main(int argc, char *argv[]) {
@@ -37,7 +38,7 @@ int main(int argc, char *argv[]) {
 
     rap_buffer_init();
 
-    /* Priorité absolue aux commandes du gestionnaire de tampons */
+    /* Priorité aux tampons, suivi des greffons de transformation */
     rap_plugin_mod_buffer_init();
     rap_plugin_mod_text_init();
     rap_plugin_mod_io_init();
@@ -47,6 +48,7 @@ int main(int argc, char *argv[]) {
     rap_plugin_mod_undo_init();
     rap_plugin_mod_delete_init();
     rap_plugin_mod_replace_init();
+    rap_plugin_mod_sanitize_init();
 
     int loaded_count = 0;
     for (int i = 1; i < argc && loaded_count < RAP_MAX_BUFFERS; ++i) {
