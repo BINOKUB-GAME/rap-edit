@@ -1,13 +1,15 @@
 /* ==============================================================================
  * SCRIPT      : include/rap_edit_types.h
- * RÉVISION    : Rev 1.6 (Horizontal Viewport Integration)
+ * RÉVISION    : Rev 2.1 (Full Architecture Resync & 256 KB BSS Alignment)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Ajout du décalage viewport_left pour la gestion du défilement
- *               horizontal fluide des lignes longues sans allocation dynamique.
- * FONCTIONS   :
- *   1. rap_line_t (Descripteur d'offset et longueur de ligne)
- *   2. rap_clipboard_t (Structure BSS du presse-papiers interne)
- *   3. rap_context_t (État global enrichi avec viewport_left et statut 256 o)
+ * INTÉGRATION : Suppression du doublon RAP_CLIPBOARD_CAPACITY pour hériter
+ *               directement des 256 Ko de rap_edit_config.h. Préservation intégrale
+ *               des descripteurs système (fd, inode_num, file_size_on_disk), du flag
+ *               modified de rap_line_t et du tampon status_msg calibré à 256 octets.
+ * STRUCTURES  :
+ *   1. rap_line_t (Descripteur d'offset, longueur et état modifié de ligne)
+ *   2. rap_clipboard_t (Presse-papiers interne BSS calé sur RAP_CLIPBOARD_CAPACITY)
+ *   3. rap_context_t (Contexte global d'exécution et d'édition multi-tampons BSS)
  * ============================================================================== */
 
 #ifndef RAP_EDIT_TYPES_H
@@ -18,8 +20,6 @@
 #include <stdbool.h>
 #include "rap_edit_config.h"
 
-#define RAP_CLIPBOARD_CAPACITY (64 * 1024)
-
 /* 1. Descripteur de ligne */
 typedef struct {
     uint32_t offset;    /* Décalage en octets dans le tampon brut */
@@ -27,26 +27,26 @@ typedef struct {
     bool     modified;  /* Drapeau de modification locale */
 } rap_line_t;
 
-/* 2. Presse-papiers interne résidant en BSS */
+/* 2. Presse-papiers interne résidant en BSS (capacité héritée de rap_edit_config.h) */
 typedef struct {
     uint8_t  buffer[RAP_CLIPBOARD_CAPACITY];
     uint32_t len;
     bool     is_line_block; /* true = bloc de lignes entières, false = flux octets */
 } rap_clipboard_t;
 
-/* 3. Contexte global d'exécution */
+/* 3. Contexte global d'exécution d'un onglet / document (100% statique en BSS) */
 typedef struct {
     int             fd;                                   /* Descripteur de fichier actif */
     char            file_path[RAP_MAX_PATH_LEN];         /* Chemin du fichier audité */
     uint64_t        file_size_on_disk;                   /* Taille constatée sur disque */
     uint64_t        inode_num;                           /* Inode système vérifié */
-    uint8_t         raw_buffer[RAP_STATIC_BUFFER_SIZE];  /* Tampon statique BSS */
+    uint8_t         raw_buffer[RAP_STATIC_BUFFER_SIZE];  /* Tampon statique BSS (256 Ko) */
     uint32_t        buffer_len;                          /* Octets réels chargés */
     
-    rap_line_t      lines[RAP_MAX_LINES];                /* Table des lignes */
+    rap_line_t      lines[RAP_MAX_LINES];                /* Table des lignes (8192 max) */
     uint32_t        total_lines;                         /* Nombre de lignes indexées */
     
-    rap_clipboard_t clipboard;                           /* Tampon de copie/coupe interne */
+    rap_clipboard_t clipboard;                           /* Tampon de copie/coupe interne (256 Ko) */
 
     /* Pilotage visuel et sélection continue */
     uint32_t        cursor_row;                          /* Ligne active */

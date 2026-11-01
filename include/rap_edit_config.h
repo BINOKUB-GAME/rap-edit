@@ -1,18 +1,21 @@
 /* ==============================================================================
  * SCRIPT      : include/rap_edit_config.h
- * RÉVISION    : Rev 1.6 (Plugin Capacity & Color Constants Extension)
+ * RÉVISION    : Rev 1.7 (256 KB Tactical Buffer & Line Capacity Expansion)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Extension de RAP_MAX_PLUGINS à 64 entrées statiques BSS pour
- *               interdire toute saturation lors de l'enregistrement de greffons.
- * FONCTIONS   : (Constantes architecturales et codes VT100 ANSI)
+ * INTÉGRATION : Extension du tampon statique de 64 Ko à 256 Ko (RAP_STATIC_BUFFER_SIZE)
+ *               permettant d'éditer des configurations noyau (.config) et scripts
+ *               volumineux. Extension corrélative de RAP_MAX_LINES à 8192 lignes.
+ *               Maintien strict de l'architecture 0-heap BSS (zéro malloc).
+ * FONCTIONS   : (Constantes architecturales, limites BSS et codes VT100 ANSI)
  * ============================================================================== */
 
 #ifndef RAP_EDIT_CONFIG_H
 #define RAP_EDIT_CONFIG_H
 
 #define RAP_MAX_PATH_LEN        1024
-#define RAP_STATIC_BUFFER_SIZE  (64 * 1024)
-#define RAP_MAX_LINES           4096
+#define RAP_STATIC_BUFFER_SIZE  (256 * 1024)   /* 262 144 octets par slot */
+#define RAP_CLIPBOARD_CAPACITY  (256 * 1024)   /* Presse-papiers calé à 256 Ko */
+#define RAP_MAX_LINES           8192           /* Indexation jusqu'à 8192 lignes */
 #define RAP_MAX_PLUGINS         64
 #define RAP_MAX_LINE_INPUT      256
 #define RAP_MAX_BUFFERS         4

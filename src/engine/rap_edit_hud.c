@@ -1,14 +1,15 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_hud.c
- * RÉVISION    : Rev 1.4 (Encoding Radar & Corruption HUD Badges)
+ * RÉVISION    : Rev 1.5 (Dynamic Name Width & Truncation Elimination)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Analyse temps réel du tampon pour afficher l'indicateur de fin
- *               de ligne [CRLF] (alerte Windows) / [LF] (Unix sain) et un badge
- *               rouge d'alarme [!NUL] si des octets corrompus sont présents.
+ * INTÉGRATION : Élimination de la troncature fixe à 16 caractères (%.16s).
+ *               Allocation dynamique de l'espace pour le nom du fichier cible
+ *               (jusqu'à 48 caractères) et des onglets (20 caractères) selon la
+ *               largeur du terminal. Affichage complet des extensions (.txt, .orig.bak).
  * FONCTIONS   :
  *   1. rap_hud_append_str (Injection sécurisée de chaîne dans le tampon BSS)
  *   2. rap_hud_get_basename (Extraction du nom de fichier pur sans son arborescence)
- *   3. rap_hud_render_to_buf (Formatage et écriture atomique du HUD enrichi)
+ *   3. rap_hud_render_to_buf (Formatage et écriture atomique du HUD adaptatif)
  * ============================================================================== */
 
 #ifndef _POSIX_C_SOURCE
@@ -69,7 +70,7 @@ void rap_hud_render_to_buf(const rap_context_t *ctx, char *frame_buf, uint32_t *
     }
 
     /* Construction de la barre d'onglets dynamique */
-    char tabs_buf[128];
+    char tabs_buf[256];
     uint32_t t_off = 0;
     tabs_buf[0] = '\0';
 
@@ -84,10 +85,10 @@ void rap_hud_render_to_buf(const rap_context_t *ctx, char *frame_buf, uint32_t *
         int w = 0;
         if (i == active) {
             w = snprintf(tabs_buf + t_off, sizeof(tabs_buf) - t_off,
-                         "[%u: %.12s%s] ", i + 1, name, dirty);
+                         "[%u: %.20s%s] ", i + 1, name, dirty);
         } else {
             w = snprintf(tabs_buf + t_off, sizeof(tabs_buf) - t_off,
-                         "#%u: %.12s%s ", i + 1, name, dirty);
+                         "#%u: %.20s%s ", i + 1, name, dirty);
         }
         if (w > 0 && t_off + (uint32_t)w < sizeof(tabs_buf)) {
             t_off += (uint32_t)w;
@@ -110,8 +111,16 @@ void rap_hud_render_to_buf(const rap_context_t *ctx, char *frame_buf, uint32_t *
 
     /* --- LIGNE 2 : Détails techniques, Format LF/CRLF et Alarme NUL --- */
     rap_hud_append_str(frame_buf, frame_len, max_buf_size, "\033[2;1H" RAP_ANSI_REVERSE);
-    snprintf(row_buf, sizeof(row_buf), " CIBLE: %-16.16s | L: %u/%u | %u o | %s | %s%s | %s",
-             rap_hud_get_basename(ctx->file_path),
+
+    /* Calcul de la largeur disponible pour le nom de fichier cible */
+    const char *base_target = rap_hud_get_basename(ctx->file_path);
+    int max_target_display = ctx->term_cols - 60;
+    if (max_target_display < 16) max_target_display = 16;
+    if (max_target_display > 48) max_target_display = 48;
+
+    snprintf(row_buf, sizeof(row_buf), " CIBLE: %-.*s | L: %u/%u | %u o | %s | %s%s | %s",
+             max_target_display,
+             base_target,
              ctx->cursor_row + 1,
              ctx->total_lines,
              ctx->buffer_len,
@@ -119,6 +128,7 @@ void rap_hud_render_to_buf(const rap_context_t *ctx, char *frame_buf, uint32_t *
              has_crlf ? "[CRLF/DOS]" : "[LF/UNIX]",
              has_null ? " [!NUL]" : "",
              state_label);
+
     if ((int)strlen(row_buf) >= ctx->term_cols) {
         row_buf[ctx->term_cols - 1] = '\0';
     }

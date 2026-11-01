@@ -1,9 +1,9 @@
 /* ==============================================================================
  * SCRIPT      : src/cli/rap_edit_main.c
- * RÉVISION    : Rev 3.7 (Sanitize Plugin Integration)
+ * RÉVISION    : Rev 3.8 (Panic Plugin Integration in Boot Sequence)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Ajout de l'enregistrement de rap_plugin_mod_sanitize_init
- *               dans la séquence d'amorçage des greffons BSS.
+ * INTÉGRATION : Ajout de rap_plugin_mod_panic_init dans la chaîne d'initialisation
+ *               des greffons BSS.
  * FONCTIONS   :
  *   1. main (Point d'entrée du binaire)
  * ============================================================================== */
@@ -28,6 +28,7 @@ extern int rap_plugin_mod_undo_init(void);
 extern int rap_plugin_mod_delete_init(void);
 extern int rap_plugin_mod_replace_init(void);
 extern int rap_plugin_mod_sanitize_init(void);
+extern int rap_plugin_mod_panic_init(void);
 
 /* 1. Point d'entrée du binaire */
 int main(int argc, char *argv[]) {
@@ -38,7 +39,7 @@ int main(int argc, char *argv[]) {
 
     rap_buffer_init();
 
-    /* Priorité aux tampons, suivi des greffons de transformation */
+    /* Chaîne d'initialisation des greffons BSS */
     rap_plugin_mod_buffer_init();
     rap_plugin_mod_text_init();
     rap_plugin_mod_io_init();
@@ -49,6 +50,7 @@ int main(int argc, char *argv[]) {
     rap_plugin_mod_delete_init();
     rap_plugin_mod_replace_init();
     rap_plugin_mod_sanitize_init();
+    rap_plugin_mod_panic_init();
 
     int loaded_count = 0;
     for (int i = 1; i < argc && loaded_count < RAP_MAX_BUFFERS; ++i) {

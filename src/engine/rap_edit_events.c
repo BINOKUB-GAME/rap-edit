@@ -1,10 +1,9 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_events.c
- * RÉVISION    : Rev 1.15 (Direct Sanitization Command Routing)
+ * RÉVISION    : Rev 1.16 (Panic & Atomic Backup Direct Routing Integration)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Dispatch immédiat et garanti des commandes d'urgence :clean,
- *               :dos2unix, :d2u, :strip-null et :null, éliminant tout risque de
- *               rejet par saturation ou masquage de table.
+ * INTÉGRATION : Routage direct et prioritaire des commandes d'urgence matérielle :
+ *               :bak, :bak orig, :bak <fichier> et :panic. Découplage strict.
  * FONCTIONS   :
  *   1. rap_events_handle_colon_command (Parseur et dispatch direct et prioritaire)
  *   2. rap_events_process_escape (Décodage étendu : flèches, Shift et Page-Up/Down)
@@ -32,6 +31,7 @@
 #include "rap_edit_replace.h"
 #include "rap_edit_buffer.h"
 #include "rap_edit_sanitize.h"
+#include "rap_edit_panic.h"
 
 extern void rap_ui_render_screen(rap_context_t *ctx);
 extern void rap_ui_update_dimensions(rap_context_t *ctx);
@@ -87,8 +87,8 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
             strncpy(target_name, act->file_path, sizeof(target_name) - 1);
             target_name[sizeof(target_name) - 1] = '\0';
             snprintf(act->status_msg, sizeof(act->status_msg),
-                     RAP_ANSI_BOLD "[✓] Bascule vers l'onglet #%u : '%.48s'" RAP_ANSI_RESET,
-                     target, target_name);
+                 RAP_ANSI_BOLD "[✓] Bascule vers l'onglet #%u : '%.48s'" RAP_ANSI_RESET,
+                 target, target_name);
         } else {
             snprintf(ctx->status_msg, sizeof(ctx->status_msg),
                      RAP_ANSI_YELLOW "[!] Onglet inexistant (max: #%u)" RAP_ANSI_RESET,
@@ -97,7 +97,18 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* D. Commandes tactiques d'assainissement direct (:clean, :dos2unix, :strip-null) */
+    /* D. Commandes tactiques de secours atomique (:bak, :panic) */
+    if (strncmp(cmd, "bak", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) {
+        const char *arg = (cmd[3] == ' ') ? (cmd + 4) : "";
+        rap_panic_execute(ctx, arg);
+        return;
+    }
+    if (strcmp(cmd, "panic") == 0) {
+        rap_panic_execute(ctx, NULL);
+        return;
+    }
+
+    /* E. Commandes tactiques d'assainissement direct (:clean, :dos2unix, :strip-null) */
     if (strcmp(cmd, "clean") == 0) {
         rap_sanitize_clean_all(ctx);
         return;
@@ -111,7 +122,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* E. Autres commandes de gestion de tampons (:b, :bd, :close) */
+    /* F. Commandes de gestion de tampons (:b, :bd, :close) */
     if (strcmp(cmd, "b") == 0 ||
         strncmp(cmd, "tab", 3) == 0 ||
         strncmp(cmd, "bd", 2) == 0 ||
@@ -120,7 +131,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* F. Commandes système et d'aide */
+    /* G. Commandes système et d'aide */
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         rap_ui_show_help_screen();
         return;
@@ -142,7 +153,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* G. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
+    /* H. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
     bool is_pure_number = true;
     for (const char *k = cmd; *k != '\0'; ++k) {
         if (*k < '0' || *k > '9') {
@@ -172,7 +183,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* H. Macros d'édition (presse-papiers, suppression, substitution) */
+    /* I. Macros d'édition (presse-papiers, suppression, substitution) */
     if (rap_clip_parse_line_macro(ctx, cmd) == 0) {
         rap_ops_clamp_cursor(ctx);
         return;
@@ -188,7 +199,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* I. Dispatch générique pour tout autre greffon */
+    /* J. Dispatch générique pour tout autre greffon */
     int res = rap_plugin_dispatch(ctx, cmd);
     if (res == -127) {
         snprintf(ctx->status_msg, sizeof(ctx->status_msg),
