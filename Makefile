@@ -1,8 +1,8 @@
 # ==============================================================================
 # SCRIPT      : Makefile
-# RÉVISION    : Rev 2.5
+# RÉVISION    : Rev 2.7
 # PROJET      : RAP-EDIT (RAPTOR DEFENSE COMPANION)
-# INTÉGRATION : Ajout du greffon mod_diff.c (Comparaison in-situ 0-heap).
+# INTÉGRATION : Ajout du greffon mod_protect.c (Protection en écriture :ro / :rw).
 # ==============================================================================
 
 CC ?= gcc
@@ -27,6 +27,8 @@ SRC = src/engine/rap_edit_core.c \
       src/plugins/mod_sanitize.c \
       src/plugins/mod_panic.c \
       src/plugins/mod_diff.c \
+      src/plugins/mod_hex.c \
+      src/plugins/mod_protect.c \
       src/cli/rap_edit_main.c
 
 OBJ = $(SRC:.c=.o)

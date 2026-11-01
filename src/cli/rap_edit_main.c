@@ -1,8 +1,8 @@
 /* ==============================================================================
  * SCRIPT      : src/cli/rap_edit_main.c
- * RÉVISION    : Rev 3.9 (Diff Plugin Integration in Boot Sequence)
+ * RÉVISION    : Rev 3.11 (Write-Protection Plugin Boot Registration)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Ajout de rap_plugin_mod_diff_init dans la chaîne d'initialisation
+ * INTÉGRATION : Ajout de rap_plugin_mod_protect_init dans la chaîne d'initialisation
  *               des greffons BSS.
  * FONCTIONS   :
  *   1. main (Point d'entrée du binaire)
@@ -30,6 +30,8 @@ extern int rap_plugin_mod_replace_init(void);
 extern int rap_plugin_mod_sanitize_init(void);
 extern int rap_plugin_mod_panic_init(void);
 extern int rap_plugin_mod_diff_init(void);
+extern int rap_plugin_mod_hex_init(void);
+extern int rap_plugin_mod_protect_init(void);
 
 /* 1. Point d'entrée du binaire */
 int main(int argc, char *argv[]) {
@@ -53,6 +55,8 @@ int main(int argc, char *argv[]) {
     rap_plugin_mod_sanitize_init();
     rap_plugin_mod_panic_init();
     rap_plugin_mod_diff_init();
+    rap_plugin_mod_hex_init();
+    rap_plugin_mod_protect_init();
 
     int loaded_count = 0;
     for (int i = 1; i < argc && loaded_count < RAP_MAX_BUFFERS; ++i) {

@@ -8,7 +8,13 @@
    :bd  /  :close           : Ferme l'onglet actif (refuse si modifications en cours)
    :bd! /  :close!          : Force la fermeture de l'onglet actif sans sauvegarder
 
-{BOLD}2. EFFACEMENT CLAVIER ET SUPPRESSION DE LIGNES (mod_delete) :{RESET}
+{BOLD}2. PROTECTION D'ÉCRITURE ET AUDIT SÉCURISÉ (mod_protect) :{RESET}
+   :ro                      : Verrouille l'onglet en LECTURE SEULE ([RO])
+                              Bloque frappe, Suppr, Backspace, Entrée et collage (audit sûr)
+   :rw                      : Déverrouille l'onglet en LECTURE-ÉCRITURE ([RW])
+   Indicateur HUD (ligne 2) : Affiche en temps réel [RW] (vert) ou [RO] (rouge vif)
+
+{BOLD}3. EFFACEMENT CLAVIER ET SUPPRESSION DE LIGNES (mod_delete) :{RESET}
    {CYAN}A. Touches physiques d'effacement direct :{RESET}
       Backspace (Retour Arr): Efface le caractère avant le curseur (fusionne si col 0)
       Suppr / Delete        : Efface le caractère sous le curseur (séquence \033[3~)
@@ -21,19 +27,27 @@
       :<deb>:<fin>d         : Supprime la plage absolue (Exemple: :10:30d)
    {YELLOW}*Annulation instantanée  : Tapez :u ou Ctrl+Z pour restaurer les lignes effacées{RESET}
 
-{BOLD}3. COMPARAISON TACTIQUE IN-SITU (mod_diff) :{RESET}
+{BOLD}4. INSPECTEUR HEXADÉCIMAL BRUT (mod_hex) :{RESET}
+   :hex                     : Ouvre la grille hexadécimale à la position du curseur
+   :hex 0x<offset>          : Saute directement à l'adresse hexadécimale (ex: :hex 0x200)
+   :hex <decimal>           : Saute à l'offset en octets (ex: :hex 512)
+   Contrôles du visionneur  : Flèches/j/k (ligne par ligne) | PgUp/PgDn/Espace (page)
+                              g (haut du fichier) | G (fin du fichier) | Tab (16/32 o/l)
+                              q ou Échap (revenir à l'éditeur de texte)
+
+{BOLD}5. COMPARAISON TACTIQUE IN-SITU (mod_diff) :{RESET}
    :diff  (ou :diff orig)   : Compare la RAM active avec le clone disque (.orig.bak ou disque)
    :diff #<1..4>            : Compare instantanément l'onglet actif avec un autre onglet en RAM
    :diff <fichier>          : Compare la RAM active avec un fichier externe spécifié
    Visionneur interactif    : Vert (+) ajouts | Rouge (-) suppressions | Flèches/PgUp/PgDn | q/Échap
 
-{BOLD}4. SAUVEGARDE ATOMIQUE DE SECOURS (mod_panic) :{RESET}
+{BOLD}6. SAUVEGARDE ATOMIQUE DE SECOURS (mod_panic) :{RESET}
    :bak                     : Sauvegarde synchrone immédiate dans <fichier>.bak ({BOLD}fsync{RESET})
    :bak <nom_cible>         : Sauvegarde synchrone vers un fichier nommé personnalisé
    :bak orig                : Clone physique direct de l'état original sur disque (.orig.bak)
    :panic                   : Évacuation d'urgence du tampon brut (vers ./ ou /tmp/)
 
-{BOLD}5. ASSAINISSEMENT TACTIQUE ANTI-CORRUPTION (mod_sanitize) :{RESET}
+{BOLD}7. ASSAINISSEMENT TACTIQUE ANTI-CORRUPTION (mod_sanitize) :{RESET}
    :clean                   : Purge globale combinée (supprime ^M et ^@ en 1 passe)
    :dos2unix  (ou :d2u)     : Convertit CRLF en LF (supprime les retours chariot ^M)
    :strip-null (ou :null)   : Élimine les octets nuls 0x00 corrompus (^@)
@@ -41,7 +55,7 @@
    {MAGENTA}^@ en magenta{RESET}           : Octet nul (0x00) issu d'un crash disque ou injection
    Radar HUD (ligne 2)      : Indique [CRLF/DOS] ou [LF/UNIX] et l'alerte [!NUL]
 
-{BOLD}6. PRESSE-PAPIERS ET COLLAGE (3 MODES DISPONIBLES) :{RESET}
+{BOLD}8. PRESSE-PAPIERS ET COLLAGE (3 MODES DISPONIBLES) :{RESET}
    {CYAN}A. Mode Visuel (Interactif) :{RESET}
       Shift + Flèches       : Sélectionne une zone de texte à l'écran
       Ctrl + C / Ctrl + X   : Copie / Coupe la sélection vers le presse-papiers
@@ -57,7 +71,7 @@
       :10c:15w              : Copie la ligne 10 et la colle à la ligne 15
    {YELLOW}*Presse-papiers unifié   : Copiez dans un fichier (#1), collez dans un autre (#2) !{RESET}
 
-{BOLD}7. NAVIGATION ET RECHERCHE :{RESET}
+{BOLD}9. NAVIGATION ET RECHERCHE :{RESET}
    Page-Up / Page-Down      : Défilement rapide d'une hauteur d'écran complète
    Support UTF-8 complet    : Rendu natif des caractères accentués (é, è, à, É...)
    Défilement horizontal    : Automatique dès dépassement de largeur d'écran

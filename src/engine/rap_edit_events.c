@@ -1,16 +1,15 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_events.c
- * RÉVISION    : Rev 1.18 (Physical Delete Key & Selection Removal Integration)
+ * RÉVISION    : Rev 1.20 (Write-Protection Enforcement & Direct CLI Routing)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Prise en charge native de la touche physique Suppr / Delete
- *               (séquence VT220 \033[3~). Effacement avant du caractère ou du saut
- *               de ligne sous le curseur, destruction de sélection active et
- *               intégration avec l'historique d'annulation rap_undo_snapshot().
+ * INTÉGRATION : Blocage strict des modifications en mode [RO] sur toutes les voies
+ *               de saisie (frappe, Backspace, Entrée, Suppr, Ctrl+X, Ctrl+V).
+ *               Routage direct et prioritaire des commandes :ro et :rw.
  * FONCTIONS   :
  *   1. rap_events_handle_colon_command (Parseur et dispatch direct et prioritaire)
  *   2. rap_events_process_escape (Décodage étendu : flèches, Suppr, Shift, PgUp/PgDn)
  *   3. rap_events_prompt_command (Invite de commande avec tolérance EINTR)
- *   4. rap_events_run_loop (Boucle principale multi-onglets réactive)
+ *   4. rap_events_run_loop (Boucle principale avec barrière de protection [RO])
  * ============================================================================== */
 
 #ifndef _POSIX_C_SOURCE
@@ -35,6 +34,8 @@
 #include "rap_edit_sanitize.h"
 #include "rap_edit_panic.h"
 #include "rap_edit_diff.h"
+#include "rap_edit_hex.h"
+#include "rap_edit_protect.h"
 
 extern void rap_ui_render_screen(rap_context_t *ctx);
 extern void rap_ui_update_dimensions(rap_context_t *ctx);
@@ -101,14 +102,31 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* D. Comparaison tactique in-situ (:diff, :diff orig, :diff #n) */
+    /* D. Protection en écriture (:ro, :rw) */
+    if (strcmp(cmd, "ro") == 0) {
+        rap_protect_set_mode(ctx, true);
+        return;
+    }
+    if (strcmp(cmd, "rw") == 0) {
+        rap_protect_set_mode(ctx, false);
+        return;
+    }
+
+    /* E. Inspection hexadécimale brute (:hex, :hex <offset>) */
+    if (strncmp(cmd, "hex", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) {
+        const char *arg = (cmd[3] == ' ') ? (cmd + 4) : "";
+        rap_hex_execute(ctx, arg);
+        return;
+    }
+
+    /* F. Comparaison tactique in-situ (:diff, :diff orig, :diff #n) */
     if (strncmp(cmd, "diff", 4) == 0 && (cmd[4] == '\0' || cmd[4] == ' ')) {
         const char *arg = (cmd[4] == ' ') ? (cmd + 5) : "";
         rap_diff_execute(ctx, arg);
         return;
     }
 
-    /* E. Commandes tactiques de secours atomique (:bak, :panic) */
+    /* G. Commandes tactiques de secours atomique (:bak, :panic) */
     if (strncmp(cmd, "bak", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) {
         const char *arg = (cmd[3] == ' ') ? (cmd + 4) : "";
         rap_panic_execute(ctx, arg);
@@ -119,21 +137,21 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* F. Commandes tactiques d'assainissement direct (:clean, :dos2unix, :strip-null) */
-    if (strcmp(cmd, "clean") == 0) {
-        rap_sanitize_clean_all(ctx);
-        return;
-    }
-    if (strcmp(cmd, "dos2unix") == 0 || strcmp(cmd, "d2u") == 0) {
-        rap_sanitize_dos2unix(ctx);
-        return;
-    }
-    if (strcmp(cmd, "strip-null") == 0 || strcmp(cmd, "null") == 0) {
-        rap_sanitize_strip_null(ctx);
+    /* H. Assainissement tactique direct (:clean, :dos2unix, :strip-null) */
+    if (strcmp(cmd, "clean") == 0 || strcmp(cmd, "dos2unix") == 0 ||
+        strcmp(cmd, "d2u") == 0 || strcmp(cmd, "strip-null") == 0 || strcmp(cmd, "null") == 0) {
+        if (ctx->is_readonly) {
+            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                     RAP_ANSI_YELLOW "[!] Modification interdite : tampon verrouillé en [RO]" RAP_ANSI_RESET);
+            return;
+        }
+        if (strcmp(cmd, "clean") == 0) rap_sanitize_clean_all(ctx);
+        else if (strcmp(cmd, "dos2unix") == 0 || strcmp(cmd, "d2u") == 0) rap_sanitize_dos2unix(ctx);
+        else rap_sanitize_strip_null(ctx);
         return;
     }
 
-    /* G. Commandes de gestion de tampons (:b, :bd, :close) */
+    /* I. Commandes de gestion de tampons (:b, :bd, :close) */
     if (strcmp(cmd, "b") == 0 ||
         strncmp(cmd, "tab", 3) == 0 ||
         strncmp(cmd, "bd", 2) == 0 ||
@@ -142,7 +160,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* H. Commandes système et d'aide */
+    /* J. Commandes système et d'aide */
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         rap_ui_show_help_screen();
         return;
@@ -150,8 +168,8 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
 
     if (strcmp(cmd, "info") == 0 || strcmp(cmd, "count") == 0) {
         snprintf(ctx->status_msg, sizeof(ctx->status_msg),
-                 RAP_ANSI_REVERSE " [INFO] Lignes: %u | Presse-papiers: %u o | Buffer: %u o " RAP_ANSI_RESET,
-                 ctx->total_lines, ctx->clipboard.len, ctx->buffer_len);
+                 RAP_ANSI_REVERSE " [INFO] Lignes: %u | Mode: %s | Presse-papiers: %u o | Buffer: %u o " RAP_ANSI_RESET,
+                 ctx->total_lines, (ctx->is_readonly ? "[RO]" : "[RW]"), ctx->clipboard.len, ctx->buffer_len);
         return;
     }
 
@@ -164,7 +182,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* I. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
+    /* K. Saut de ligne direct si la saisie est strictement numérique (ex: :42) */
     bool is_pure_number = true;
     for (const char *k = cmd; *k != '\0'; ++k) {
         if (*k < '0' || *k > '9') {
@@ -194,7 +212,13 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* J. Macros d'édition (presse-papiers, suppression, substitution) */
+    /* L. Macros d'édition (vérification de la protection [RO]) */
+    if (ctx->is_readonly && (cmd[strlen(cmd) - 1] == 'd' || strstr(cmd, "s/") || strstr(cmd, "w") || strstr(cmd, "pp"))) {
+        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                 RAP_ANSI_YELLOW "[!] Modification interdite : tampon verrouillé en [RO]" RAP_ANSI_RESET);
+        return;
+    }
+
     if (rap_clip_parse_line_macro(ctx, cmd) == 0) {
         rap_ops_clamp_cursor(ctx);
         return;
@@ -210,7 +234,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* K. Dispatch générique pour tout autre greffon */
+    /* M. Dispatch générique pour tout autre greffon */
     int res = rap_plugin_dispatch(ctx, cmd);
     if (res == -127) {
         snprintf(ctx->status_msg, sizeof(ctx->status_msg),
@@ -246,11 +270,10 @@ static void rap_events_process_escape(rap_context_t *ctx) {
         if (seq[2] == '3') {
             if (ctx->is_readonly) {
                 snprintf(ctx->status_msg, sizeof(ctx->status_msg),
-                         RAP_ANSI_YELLOW "[!] Fichier en lecture seule ([RO])" RAP_ANSI_RESET);
+                         RAP_ANSI_YELLOW "[!] Modification interdite : tampon en lecture seule ([RO])" RAP_ANSI_RESET);
                 return;
             }
 
-            /* Cas 1 : Suppression de la sélection visuelle active */
             if (ctx->is_selecting) {
                 uint32_t off1 = rap_ops_get_anchor_offset(ctx);
                 uint32_t off2 = rap_ops_get_cursor_offset(ctx);
@@ -270,7 +293,6 @@ static void rap_events_process_escape(rap_context_t *ctx) {
                 return;
             }
 
-            /* Cas 2 : Suppression du caractère ou saut de ligne directement sous le curseur */
             uint32_t off = rap_ops_get_cursor_offset(ctx);
             if (off < ctx->buffer_len) {
                 rap_undo_snapshot(ctx);
@@ -386,7 +408,7 @@ static void rap_events_prompt_command(rap_context_t *ctx) {
     }
 }
 
-/* 4. Boucle principale */
+/* 4. Boucle principale avec barrière de protection [RO] */
 void rap_events_run_loop(rap_context_t *ctx) {
     (void)ctx;
     while (1) {
@@ -438,11 +460,16 @@ void rap_events_run_loop(rap_context_t *ctx) {
         }
 
         if (c == 26 || c == 21) { /* Ctrl+Z / Ctrl+U */
+            if (cur_ctx->is_readonly) {
+                snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Annulation interdite : tampon verrouillé en [RO]" RAP_ANSI_RESET);
+                continue;
+            }
             rap_undo_apply(cur_ctx);
             continue;
         }
 
-        if (c == 3) { /* Ctrl+C */
+        if (c == 3) { /* Ctrl+C (Copie autorisée en mode lecture seule) */
             if (cur_ctx->is_selecting) {
                 uint32_t off1 = rap_ops_get_anchor_offset(cur_ctx);
                 uint32_t off2 = rap_ops_get_cursor_offset(cur_ctx);
@@ -457,6 +484,12 @@ void rap_events_run_loop(rap_context_t *ctx) {
         }
 
         if (c == 24) { /* Ctrl+X */
+            if (cur_ctx->is_readonly) {
+                snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Coupe interdite : tampon verrouillé en [RO]" RAP_ANSI_RESET);
+                cur_ctx->is_selecting = false;
+                continue;
+            }
             if (cur_ctx->is_selecting) {
                 uint32_t off1 = rap_ops_get_anchor_offset(cur_ctx);
                 uint32_t off2 = rap_ops_get_cursor_offset(cur_ctx);
@@ -472,6 +505,12 @@ void rap_events_run_loop(rap_context_t *ctx) {
         }
 
         if (c == 22) { /* Ctrl+V */
+            if (cur_ctx->is_readonly) {
+                snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Collage interdit : tampon verrouillé en [RO]" RAP_ANSI_RESET);
+                cur_ctx->is_selecting = false;
+                continue;
+            }
             uint32_t insert_off = rap_ops_get_cursor_offset(cur_ctx);
             rap_clip_paste_bytes(cur_ctx, insert_off);
             cur_ctx->is_selecting = false;
@@ -480,12 +519,19 @@ void rap_events_run_loop(rap_context_t *ctx) {
 
         if (c == 7) { /* Ctrl+G */
             snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
-                     RAP_ANSI_REVERSE " [INFO] %.48s | Ligne %u/%u | %u o | Clip: %u o " RAP_ANSI_RESET,
-                     cur_ctx->file_path, cur_ctx->cursor_row + 1, cur_ctx->total_lines, cur_ctx->buffer_len, cur_ctx->clipboard.len);
+                     RAP_ANSI_REVERSE " [INFO] %.48s | Ligne %u/%u | %s | %u o | Clip: %u o " RAP_ANSI_RESET,
+                     cur_ctx->file_path, cur_ctx->cursor_row + 1, cur_ctx->total_lines,
+                     (cur_ctx->is_readonly ? "[RO]" : "[RW]"),
+                     cur_ctx->buffer_len, cur_ctx->clipboard.len);
             continue;
         }
 
         if (c == 127 || c == '\b') {
+            if (cur_ctx->is_readonly) {
+                snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Modification interdite : tampon verrouillé en [RO]" RAP_ANSI_RESET);
+                continue;
+            }
             if (cur_ctx->is_selecting) {
                 uint32_t off1 = rap_ops_get_anchor_offset(cur_ctx);
                 uint32_t off2 = rap_ops_get_cursor_offset(cur_ctx);
@@ -509,6 +555,11 @@ void rap_events_run_loop(rap_context_t *ctx) {
         }
 
         if (c == '\r' || c == '\n') {
+            if (cur_ctx->is_readonly) {
+                snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Insertion interdite : tampon verrouillé en [RO]" RAP_ANSI_RESET);
+                continue;
+            }
             rap_ops_insert_char(cur_ctx, '\n');
             continue;
         }
@@ -521,6 +572,11 @@ void rap_events_run_loop(rap_context_t *ctx) {
 
         unsigned char uc = (unsigned char)c;
         if ((uc >= 32 && uc <= 126) || uc >= 128) {
+            if (cur_ctx->is_readonly) {
+                snprintf(cur_ctx->status_msg, sizeof(cur_ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Frappe bloquée : tampon en lecture seule ([RO]). Tapez :rw pour éditer" RAP_ANSI_RESET);
+                continue;
+            }
             rap_ops_insert_char(cur_ctx, (char)uc);
         }
     }
