@@ -1,12 +1,14 @@
 /* ==============================================================================
  * SCRIPT      : src/engine/rap_edit_events.c
- * RÉVISION    : Rev 1.16 (Panic & Atomic Backup Direct Routing Integration)
+ * RÉVISION    : Rev 1.18 (Physical Delete Key & Selection Removal Integration)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Routage direct et prioritaire des commandes d'urgence matérielle :
- *               :bak, :bak orig, :bak <fichier> et :panic. Découplage strict.
+ * INTÉGRATION : Prise en charge native de la touche physique Suppr / Delete
+ *               (séquence VT220 \033[3~). Effacement avant du caractère ou du saut
+ *               de ligne sous le curseur, destruction de sélection active et
+ *               intégration avec l'historique d'annulation rap_undo_snapshot().
  * FONCTIONS   :
  *   1. rap_events_handle_colon_command (Parseur et dispatch direct et prioritaire)
- *   2. rap_events_process_escape (Décodage étendu : flèches, Shift et Page-Up/Down)
+ *   2. rap_events_process_escape (Décodage étendu : flèches, Suppr, Shift, PgUp/PgDn)
  *   3. rap_events_prompt_command (Invite de commande avec tolérance EINTR)
  *   4. rap_events_run_loop (Boucle principale multi-onglets réactive)
  * ============================================================================== */
@@ -32,12 +34,14 @@
 #include "rap_edit_buffer.h"
 #include "rap_edit_sanitize.h"
 #include "rap_edit_panic.h"
+#include "rap_edit_diff.h"
 
 extern void rap_ui_render_screen(rap_context_t *ctx);
 extern void rap_ui_update_dimensions(rap_context_t *ctx);
 extern void rap_ui_show_help_screen(void);
 extern void rap_nav_bol(rap_context_t *ctx);
 extern void rap_nav_eol(rap_context_t *ctx);
+extern int  rap_core_index_lines(rap_context_t *ctx);
 
 extern int  rap_clip_copy_bytes(rap_context_t *ctx, uint32_t start_off, uint32_t end_off);
 extern int  rap_clip_cut_bytes(rap_context_t *ctx, uint32_t start_off, uint32_t end_off);
@@ -97,7 +101,14 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* D. Commandes tactiques de secours atomique (:bak, :panic) */
+    /* D. Comparaison tactique in-situ (:diff, :diff orig, :diff #n) */
+    if (strncmp(cmd, "diff", 4) == 0 && (cmd[4] == '\0' || cmd[4] == ' ')) {
+        const char *arg = (cmd[4] == ' ') ? (cmd + 5) : "";
+        rap_diff_execute(ctx, arg);
+        return;
+    }
+
+    /* E. Commandes tactiques de secours atomique (:bak, :panic) */
     if (strncmp(cmd, "bak", 3) == 0 && (cmd[3] == '\0' || cmd[3] == ' ')) {
         const char *arg = (cmd[3] == ' ') ? (cmd + 4) : "";
         rap_panic_execute(ctx, arg);
@@ -108,7 +119,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* E. Commandes tactiques d'assainissement direct (:clean, :dos2unix, :strip-null) */
+    /* F. Commandes tactiques d'assainissement direct (:clean, :dos2unix, :strip-null) */
     if (strcmp(cmd, "clean") == 0) {
         rap_sanitize_clean_all(ctx);
         return;
@@ -122,7 +133,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* F. Commandes de gestion de tampons (:b, :bd, :close) */
+    /* G. Commandes de gestion de tampons (:b, :bd, :close) */
     if (strcmp(cmd, "b") == 0 ||
         strncmp(cmd, "tab", 3) == 0 ||
         strncmp(cmd, "bd", 2) == 0 ||
@@ -131,7 +142,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* G. Commandes système et d'aide */
+    /* H. Commandes système et d'aide */
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
         rap_ui_show_help_screen();
         return;
@@ -153,7 +164,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* H. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
+    /* I. Saut de ligne direct si la saisie est STRICTEMENT numérique (ex: :42) */
     bool is_pure_number = true;
     for (const char *k = cmd; *k != '\0'; ++k) {
         if (*k < '0' || *k > '9') {
@@ -183,7 +194,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* I. Macros d'édition (presse-papiers, suppression, substitution) */
+    /* J. Macros d'édition (presse-papiers, suppression, substitution) */
     if (rap_clip_parse_line_macro(ctx, cmd) == 0) {
         rap_ops_clamp_cursor(ctx);
         return;
@@ -199,7 +210,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
         return;
     }
 
-    /* J. Dispatch générique pour tout autre greffon */
+    /* K. Dispatch générique pour tout autre greffon */
     int res = rap_plugin_dispatch(ctx, cmd);
     if (res == -127) {
         snprintf(ctx->status_msg, sizeof(ctx->status_msg),
@@ -208,7 +219,7 @@ static void rap_events_handle_colon_command(rap_context_t *ctx, const char *cmd)
     rap_ops_clamp_cursor(ctx);
 }
 
-/* 2. Décodage étendu : flèches, Shift et Page-Up/Down */
+/* 2. Décodage étendu : flèches, Suppr, Shift et Page-Up/Down */
 static void rap_events_process_escape(rap_context_t *ctx) {
     if (!rap_term_has_input(35)) {
         ctx->is_selecting = false;
@@ -227,8 +238,54 @@ static void rap_events_process_escape(rap_context_t *ctx) {
     int page_step = ctx->term_rows - 3;
     if (page_step < 1) page_step = 1;
 
+    /* Séquences sur 4 octets de type ESC [ <num> ~ */
     if (n == 4 && seq[1] == '[' && seq[3] == '~') {
         rap_undo_reset_burst();
+
+        /* A. Touche Suppr / Delete physique (\033[3~) */
+        if (seq[2] == '3') {
+            if (ctx->is_readonly) {
+                snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Fichier en lecture seule ([RO])" RAP_ANSI_RESET);
+                return;
+            }
+
+            /* Cas 1 : Suppression de la sélection visuelle active */
+            if (ctx->is_selecting) {
+                uint32_t off1 = rap_ops_get_anchor_offset(ctx);
+                uint32_t off2 = rap_ops_get_cursor_offset(ctx);
+                if (off1 > off2) { uint32_t t = off1; off1 = off2; off2 = t; }
+                if (off2 > off1 && off2 <= ctx->buffer_len) {
+                    rap_undo_snapshot(ctx);
+                    memmove(&ctx->raw_buffer[off1],
+                            &ctx->raw_buffer[off2],
+                            ctx->buffer_len - off2);
+                    ctx->buffer_len -= (off2 - off1);
+                    ctx->is_dirty = true;
+                    rap_core_index_lines(ctx);
+                    rap_ops_set_cursor_from_offset(ctx, off1);
+                    ctx->is_selecting = false;
+                    rap_ops_clamp_cursor(ctx);
+                }
+                return;
+            }
+
+            /* Cas 2 : Suppression du caractère ou saut de ligne directement sous le curseur */
+            uint32_t off = rap_ops_get_cursor_offset(ctx);
+            if (off < ctx->buffer_len) {
+                rap_undo_snapshot(ctx);
+                memmove(&ctx->raw_buffer[off],
+                        &ctx->raw_buffer[off + 1],
+                        ctx->buffer_len - (off + 1));
+                ctx->buffer_len--;
+                ctx->is_dirty = true;
+                rap_core_index_lines(ctx);
+                rap_ops_clamp_cursor(ctx);
+            }
+            return;
+        }
+
+        /* B. Page-Up (\033[5~) */
         if (seq[2] == '5') {
             if (ctx->cursor_row > (uint32_t)page_step) {
                 ctx->cursor_row -= (uint32_t)page_step;
@@ -237,7 +294,10 @@ static void rap_events_process_escape(rap_context_t *ctx) {
             }
             rap_ops_clamp_cursor(ctx);
             return;
-        } else if (seq[2] == '6') {
+        }
+
+        /* C. Page-Down (\033[6~) */
+        if (seq[2] == '6') {
             if (ctx->total_lines > 0) {
                 ctx->cursor_row += (uint32_t)page_step;
                 if (ctx->cursor_row >= ctx->total_lines) {
@@ -249,9 +309,12 @@ static void rap_events_process_escape(rap_context_t *ctx) {
         }
     }
 
+    /* Flèches simples */
     if (n == 3 && seq[1] == '[') {
         rap_ops_move_cursor(ctx, seq[2]);
-    } else if (n == 6 && seq[1] == '[' && seq[2] == '1' && seq[3] == ';' && seq[4] == '2') {
+    }
+    /* Shift + Flèches (sélection) */
+    else if (n == 6 && seq[1] == '[' && seq[2] == '1' && seq[3] == ';' && seq[4] == '2') {
         if (!ctx->is_selecting) {
             ctx->is_selecting = true;
             ctx->sel_start_row = ctx->cursor_row;
@@ -423,6 +486,24 @@ void rap_events_run_loop(rap_context_t *ctx) {
         }
 
         if (c == 127 || c == '\b') {
+            if (cur_ctx->is_selecting) {
+                uint32_t off1 = rap_ops_get_anchor_offset(cur_ctx);
+                uint32_t off2 = rap_ops_get_cursor_offset(cur_ctx);
+                if (off1 > off2) { uint32_t t = off1; off1 = off2; off2 = t; }
+                if (off2 > off1 && off2 <= cur_ctx->buffer_len) {
+                    rap_undo_snapshot(cur_ctx);
+                    memmove(&cur_ctx->raw_buffer[off1],
+                            &cur_ctx->raw_buffer[off2],
+                            cur_ctx->buffer_len - off2);
+                    cur_ctx->buffer_len -= (off2 - off1);
+                    cur_ctx->is_dirty = true;
+                    rap_core_index_lines(cur_ctx);
+                    rap_ops_set_cursor_from_offset(cur_ctx, off1);
+                    cur_ctx->is_selecting = false;
+                    rap_ops_clamp_cursor(cur_ctx);
+                    continue;
+                }
+            }
             rap_ops_delete_char(cur_ctx);
             continue;
         }

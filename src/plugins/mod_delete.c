@@ -1,12 +1,15 @@
 /* ==============================================================================
  * SCRIPT      : src/plugins/mod_delete.c
- * RÉVISION    : Rev 1.2 (Instant Status Notifications)
+ * RÉVISION    : Rev 2.0 (Strict Relative & Absolute Batch Deletion Resync)
  * PROJET      : RAP-EDIT / RAPTOR DEFENSE COMPANION
- * INTÉGRATION : Notification instantanée sans sleep via ctx->status_msg lors de la
- *               suppression d'une ligne (:2d) ou d'une plage entière (:3:90d).
+ * INTÉGRATION : Prise en charge exacte et unifiée de :d et :dd (ligne courante),
+ *               :<N>dd (suppression relative par lot depuis le curseur),
+ *               :<num>d (ligne absolue) et :<deb>:<fin>d (plage absolue).
+ *               Resynchronisation stricte avec rap_core_index_lines(),
+ *               rap_undo_snapshot() et conservation du prototype 1-based.
  * FONCTIONS   :
- *   1. rap_delete_lines (Suppression physique par memmove et réindexation BSS)
- *   2. rap_delete_parse_cmd (Parseur des syntaxes :d, :2d et :3:90d)
+ *   1. rap_delete_lines (Suppression physique par memmove, snapshot undo et réindexation)
+ *   2. rap_delete_parse_cmd (Parseur strict discriminant :d, :dd, :<N>dd, :<num>d, :<deb>:<fin>d)
  *   3. rap_plugin_mod_delete_init (Enregistrement du greffon dans la table BSS)
  * ============================================================================== */
 
@@ -16,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdbool.h>
 
 #include "rap_edit_delete.h"
 #include "rap_edit_config.h"
@@ -83,7 +87,7 @@ int rap_delete_lines(rap_context_t *ctx, uint32_t start_line, uint32_t end_line)
     return 0;
 }
 
-/* 2. Parseur pour :d, :<num>d et :<deb>:<fin>d */
+/* 2. Parseur strict discriminant :d, :dd, :<N>dd, :<num>d, :<deb>:<fin>d */
 int rap_delete_parse_cmd(rap_context_t *ctx, const char *cmd) {
     if (!ctx || !cmd) return -1;
 
@@ -92,11 +96,58 @@ int rap_delete_parse_cmd(rap_context_t *ctx, const char *cmd) {
     }
     if (*cmd == '\0') return -1;
 
-    uint32_t start = 0, end = 0, single = 0;
-    char op = 0;
+    /* A. Ligne courante isolée : :d ou :dd */
+    if (strcmp(cmd, "d") == 0 || strcmp(cmd, "D") == 0 ||
+        strcmp(cmd, "dd") == 0 || strcmp(cmd, "DD") == 0) {
+        if (ctx->total_lines == 0) return 0;
+        uint32_t current_line = ctx->cursor_row + 1;
+        rap_delete_lines(ctx, current_line, current_line);
+        snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                 RAP_ANSI_BOLD "[✓] 1 ligne supprimée (courante L:%u)" RAP_ANSI_RESET,
+                 current_line);
+        return 0;
+    }
 
-    /* Format 1 : Plage de lignes <deb>:<fin>d (ex: 3:90d) */
-    if (sscanf(cmd, "%u:%u%c", &start, &end, &op) >= 3) {
+    size_t len = strlen(cmd);
+
+    /* B. Paquet relatif depuis la position courante : :<N>dd (ex: 10dd) */
+    if (len >= 3 && (cmd[len - 2] == 'd' || cmd[len - 2] == 'D') &&
+                    (cmd[len - 1] == 'd' || cmd[len - 1] == 'D')) {
+        bool all_digits = true;
+        for (size_t i = 0; i < len - 2; ++i) {
+            if (!isdigit((unsigned char)cmd[i])) {
+                all_digits = false;
+                break;
+            }
+        }
+        if (all_digits) {
+            uint32_t count = (uint32_t)strtoul(cmd, NULL, 10);
+            if (count == 0) {
+                snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                         RAP_ANSI_YELLOW "[!] Compteur relatif invalide : 0" RAP_ANSI_RESET);
+                return 0;
+            }
+            if (ctx->total_lines == 0) return 0;
+
+            uint32_t cur = ctx->cursor_row + 1;
+            uint32_t end = cur + count - 1;
+            if (end > ctx->total_lines) {
+                end = ctx->total_lines;
+            }
+            rap_delete_lines(ctx, cur, end);
+            uint32_t deleted = (end - cur) + 1;
+            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                     RAP_ANSI_BOLD "[✓] %u ligne%s supprimée%s (relatif depuis L:%u)" RAP_ANSI_RESET,
+                     deleted, deleted > 1 ? "s" : "", deleted > 1 ? "s" : "", cur);
+            return 0;
+        }
+    }
+
+    /* C. Plage absolue : :<deb>:<fin>d (ex: 3:90d) */
+    uint32_t start = 0, end = 0;
+    char op = 0;
+    char trailing = 0;
+    if (sscanf(cmd, "%u:%u%c%c", &start, &end, &op, &trailing) == 3) {
         op = (char)tolower((unsigned char)op);
         if (op == 'd') {
             if (start < 1 || end < start || start > ctx->total_lines) {
@@ -105,15 +156,24 @@ int rap_delete_parse_cmd(rap_context_t *ctx, const char *cmd) {
                          start, end, ctx->total_lines);
                 return 0;
             }
+            if (end > ctx->total_lines) end = ctx->total_lines;
             rap_delete_lines(ctx, start, end);
             return 0;
         }
     }
 
-    /* Format 2 : Ligne unique <num>d (ex: 2d) */
-    if (sscanf(cmd, "%u%c", &single, &op) >= 2) {
-        op = (char)tolower((unsigned char)op);
-        if (op == 'd') {
+    /* D. Ligne absolue unique : :<num>d (ex: 2d, 42d avec un seul 'd') */
+    if (len >= 2 && (cmd[len - 1] == 'd' || cmd[len - 1] == 'D') &&
+                    (cmd[len - 2] != 'd' && cmd[len - 2] != 'D')) {
+        bool all_digits = true;
+        for (size_t i = 0; i < len - 1; ++i) {
+            if (!isdigit((unsigned char)cmd[i])) {
+                all_digits = false;
+                break;
+            }
+        }
+        if (all_digits) {
+            uint32_t single = (uint32_t)strtoul(cmd, NULL, 10);
             if (single < 1 || single > ctx->total_lines) {
                 snprintf(ctx->status_msg, sizeof(ctx->status_msg),
                          RAP_ANSI_YELLOW "[!] Ligne %u hors limites (Total: %u)" RAP_ANSI_RESET,
@@ -121,25 +181,21 @@ int rap_delete_parse_cmd(rap_context_t *ctx, const char *cmd) {
                 return 0;
             }
             rap_delete_lines(ctx, single, single);
+            snprintf(ctx->status_msg, sizeof(ctx->status_msg),
+                     RAP_ANSI_BOLD "[✓] Ligne %u supprimée (absolu)" RAP_ANSI_RESET,
+                     single);
             return 0;
         }
-    }
-
-    /* Format 3 : Commande 'd' isolée */
-    if (strcmp(cmd, "d") == 0 || strcmp(cmd, "D") == 0) {
-        uint32_t current_line = ctx->cursor_row + 1;
-        rap_delete_lines(ctx, current_line, current_line);
-        return 0;
     }
 
     return -127;
 }
 
-/* 3. Enregistrement */
+/* 3. Enregistrement en table BSS */
 int rap_plugin_mod_delete_init(void) {
-    rap_plugin_t plug_del = {
+    static rap_plugin_t plug_del = {
         .cmd_trigger = "d",
-        .description = "Supprime la ligne courante (:d), une ligne (:2d) ou une plage (:3:90d)",
+        .description = "Supprime la ligne courante (:d, :dd), par lot (:10dd), une ligne (:2d) ou une plage (:3:90d)",
         .execute     = NULL
     };
     rap_plugin_register(&plug_del);

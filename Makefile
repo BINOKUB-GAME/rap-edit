@@ -1,8 +1,8 @@
 # ==============================================================================
 # SCRIPT      : Makefile
-# RÉVISION    : Rev 2.4
+# RÉVISION    : Rev 2.5
 # PROJET      : RAP-EDIT (RAPTOR DEFENSE COMPANION)
-# INTÉGRATION : Ajout du greffon mod_panic.c (Sauvegarde atomique d'urgence).
+# INTÉGRATION : Ajout du greffon mod_diff.c (Comparaison in-situ 0-heap).
 # ==============================================================================
 
 CC ?= gcc
@@ -26,6 +26,7 @@ SRC = src/engine/rap_edit_core.c \
       src/plugins/mod_buffer.c \
       src/plugins/mod_sanitize.c \
       src/plugins/mod_panic.c \
+      src/plugins/mod_diff.c \
       src/cli/rap_edit_main.c
 
 OBJ = $(SRC:.c=.o)

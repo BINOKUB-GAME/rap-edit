@@ -8,22 +8,40 @@
    :bd  /  :close           : Ferme l'onglet actif (refuse si modifications en cours)
    :bd! /  :close!          : Force la fermeture de l'onglet actif sans sauvegarder
 
-{BOLD}2. SAUVEGARDE ATOMIQUE DE SECOURS (mod_panic) :{RESET}
+{BOLD}2. EFFACEMENT CLAVIER ET SUPPRESSION DE LIGNES (mod_delete) :{RESET}
+   {CYAN}A. Touches physiques d'effacement direct :{RESET}
+      Backspace (Retour Arr): Efface le caractère avant le curseur (fusionne si col 0)
+      Suppr / Delete        : Efface le caractère sous le curseur (séquence \033[3~)
+   {CYAN}B. Suppression relative (depuis la position active du curseur) :{RESET}
+      :d  ou  :dd           : Supprime la ligne courante sous le curseur
+      :<N>dd                : Supprime les N lignes suivantes depuis le curseur
+                              Exemple : :10dd efface 10 lignes (rapprochement de blocs)
+   {CYAN}C. Suppression absolue (par numéro de ligne dans le fichier) :{RESET}
+      :<num>d               : Supprime la ligne absolue <num> (Exemple: :42d)
+      :<deb>:<fin>d         : Supprime la plage absolue (Exemple: :10:30d)
+   {YELLOW}*Annulation instantanée  : Tapez :u ou Ctrl+Z pour restaurer les lignes effacées{RESET}
+
+{BOLD}3. COMPARAISON TACTIQUE IN-SITU (mod_diff) :{RESET}
+   :diff  (ou :diff orig)   : Compare la RAM active avec le clone disque (.orig.bak ou disque)
+   :diff #<1..4>            : Compare instantanément l'onglet actif avec un autre onglet en RAM
+   :diff <fichier>          : Compare la RAM active avec un fichier externe spécifié
+   Visionneur interactif    : Vert (+) ajouts | Rouge (-) suppressions | Flèches/PgUp/PgDn | q/Échap
+
+{BOLD}4. SAUVEGARDE ATOMIQUE DE SECOURS (mod_panic) :{RESET}
    :bak                     : Sauvegarde synchrone immédiate dans <fichier>.bak ({BOLD}fsync{RESET})
    :bak <nom_cible>         : Sauvegarde synchrone vers un fichier nommé personnalisé
    :bak orig                : Clone physique direct de l'état original sur disque (.orig.bak)
    :panic                   : Évacuation d'urgence du tampon brut (vers ./ ou /tmp/)
 
-{BOLD}3. ASSAINISSEMENT TACTIQUE ANTI-CORRUPTION :{RESET}
+{BOLD}5. ASSAINISSEMENT TACTIQUE ANTI-CORRUPTION (mod_sanitize) :{RESET}
    :clean                   : Purge globale combinée (supprime ^M et ^@ en 1 passe)
    :dos2unix  (ou :d2u)     : Convertit CRLF en LF (supprime les retours chariot ^M)
    :strip-null (ou :null)   : Élimine les octets nuls 0x00 corrompus (^@)
    {RED}^M en rouge vif{RESET}         : Retour chariot Windows (\r / 0x0D) détecté
    {MAGENTA}^@ en magenta{RESET}           : Octet nul (0x00) issu d'un crash disque ou injection
    Radar HUD (ligne 2)      : Indique [CRLF/DOS] ou [LF/UNIX] et l'alerte [!NUL]
-   Annulation (:u)          : Restaure instantanément l'état brut si nécessaire
 
-{BOLD}4. PRESSE-PAPIERS ET COLLAGE (3 MODES DISPONIBLES) :{RESET}
+{BOLD}6. PRESSE-PAPIERS ET COLLAGE (3 MODES DISPONIBLES) :{RESET}
    {CYAN}A. Mode Visuel (Interactif) :{RESET}
       Shift + Flèches       : Sélectionne une zone de texte à l'écran
       Ctrl + C / Ctrl + X   : Copie / Coupe la sélection vers le presse-papiers
@@ -39,7 +57,7 @@
       :10c:15w              : Copie la ligne 10 et la colle à la ligne 15
    {YELLOW}*Presse-papiers unifié   : Copiez dans un fichier (#1), collez dans un autre (#2) !{RESET}
 
-{BOLD}5. NAVIGATION ET AFFICHAGE :{RESET}
+{BOLD}7. NAVIGATION ET RECHERCHE :{RESET}
    Page-Up / Page-Down      : Défilement rapide d'une hauteur d'écran complète
    Support UTF-8 complet    : Rendu natif des caractères accentués (é, è, à, É...)
    Défilement horizontal    : Automatique dès dépassement de largeur d'écran
@@ -47,15 +65,9 @@
    Ctrl + A / Ctrl + E      : Début de ligne (colonne 0) / Fin de ligne extrême (EOL)
    :<num>                   : Saut direct à la ligne indiquée (ex: :42)
    :$                       : Saut direct à la dernière ligne du document
-   Ctrl + G  /  :info       : Statistiques (Ligne, octets, presse-papiers)
-
-{BOLD}6. RECHERCHE, SUBSTITUTION ET GESTION :{RESET}
    :s/ancien/nouveau/       : Remplace la 1ère occurrence sur la ligne active
-   :s/ancien/nouveau/g      : Remplace toutes les occurrences sur la ligne active
    :%s/ancien/nouveau/g     : Remplace dans TOUT le document
-   :<deb>:<fin>s/anc/nouv/g : Remplace dans une plage précise de lignes
-   :<num>d / :<deb>:<fin>d  : Supprime une ligne ou une plage (ex: :2d, :3:90d)
-   :rch <motif>             : Recherche textuelle circulaire instantanée sans latence
-   :u  /  Ctrl + Z          : Annulation / Rétablissement instantané (Undo/Redo)
+   :rch <motif>             : Recherche textuelle circulaire instantanée
+   :u  /  Ctrl + Z          : Annulation instantanée (Undo/Redo)
    :w!                      : Sauvegarde atomique synchrone sur disque (fsync)
    :q!                      : Quitte immédiatement l'éditeur sans confirmation
