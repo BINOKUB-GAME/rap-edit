@@ -185,3 +185,16 @@ rap-edit/
 ## 7. Licence
 
 Projet développé sous architecture déterministe pour interventions d'urgence et environnements critiques. Code autonome libre d'utilisation et d'adaptation en environnement système.
+
+## Installation rapide
+
+```bash
+# 1. Cloner le dépôt
+git clone [https://github.com/BINOKUB-GAME/rap-edit.git](https://github.com/BINOKUB-GAME/rap-edit.git)
+cd rap-edit
+
+# 2. Compiler le binaire statique 0-heap
+make
+
+# 3. Installer dans le système
+sudo make install
